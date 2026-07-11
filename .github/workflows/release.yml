@@ -1,0 +1,53 @@
+# Brew (source build from the tag tarball) is the install channel; this workflow
+# just proves the tag builds and parks a DMG in a draft release.
+# Optional (Apple notarization, when a Developer ID exists):
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci || npm install
+
+      # Sidecar hook binary for both architectures → universal binary
+      - name: Build sidecar (universal)
+        run: |
+          cd src-tauri
+          cargo build --release -p sidecrab-hook --target aarch64-apple-darwin
+          cargo build --release -p sidecrab-hook --target x86_64-apple-darwin
+          mkdir -p binaries
+          # tauri validates the PER-ARCH triple during each compile leg of a
+          # universal build, then bundles the universal one — provide all three
+          cp target/aarch64-apple-darwin/release/sidecrab-hook binaries/sidecrab-hook-aarch64-apple-darwin
+          cp target/x86_64-apple-darwin/release/sidecrab-hook binaries/sidecrab-hook-x86_64-apple-darwin
+          lipo -create \
+            target/aarch64-apple-darwin/release/sidecrab-hook \
+            target/x86_64-apple-darwin/release/sidecrab-hook \
+            -output binaries/sidecrab-hook-universal-apple-darwin
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Apple notarization: when a Developer ID exists, re-add these env vars
+          # (empty values break tauri-action's keychain import):
+          #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+          #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+        with:
+          args: --target universal-apple-darwin
+          tagName: ${{ github.ref_name }}
+          releaseName: "v__VERSION__"
+          releaseDraft: true

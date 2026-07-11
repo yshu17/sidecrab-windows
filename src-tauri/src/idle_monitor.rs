@@ -1,0 +1,50 @@
+//! Detects user inactivity via macOS HIDIdleTime and emits `user-idle` /
+//! `user-active` transition events. The wander behavior (frontend) consumes them.
+
+use std::time::Duration;
+use tauri::{AppHandle, Emitter};
+
+const POLL: Duration = Duration::from_secs(2);
+const DEFAULT_THRESHOLD_SECS: f64 = 30.0;
+
+pub fn threshold_secs() -> f64 {
+    std::env::var("SIDECRAB_IDLE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_THRESHOLD_SECS)
+}
+
+/// Point-in-time query for the frontend poller (events alone miss the case where
+/// the pet is busy at the transition moment and needs to re-check later).
+#[tauri::command]
+pub fn user_is_idle() -> bool {
+    hid_idle_secs().map(|s| s >= threshold_secs()).unwrap_or(false)
+}
+
+fn hid_idle_secs() -> Option<f64> {
+    let out = std::process::Command::new("ioreg")
+        .args(["-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime"])
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    let line = s.lines().find(|l| l.contains("HIDIdleTime"))?;
+    let ns: f64 = line.split('=').nth(1)?.trim().parse().ok()?;
+    Some(ns / 1e9)
+}
+
+pub fn spawn(app: AppHandle) {
+    std::thread::spawn(move || {
+        // Override for testing: SIDECRAB_IDLE_SECS=10
+        let threshold = threshold_secs();
+        let mut was_idle = false;
+        loop {
+            std::thread::sleep(POLL);
+            let Some(idle) = hid_idle_secs() else { continue };
+            let is_idle = idle >= threshold;
+            if is_idle != was_idle {
+                was_idle = is_idle;
+                let _ = app.emit(if is_idle { "user-idle" } else { "user-active" }, is_idle);
+            }
+        }
+    });
+}

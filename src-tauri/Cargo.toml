@@ -1,0 +1,29 @@
+[package]
+name = "sidecrab"
+version = "0.1.0"
+description = "Desktop pet crab that reacts to Claude Code activity"
+authors = ["zvoque"]
+edition = "2021"
+
+# The hook sidecar lives in its own crate (hook/) so the app's tauri-build
+# externalBin validation can't deadlock on a binary this crate would produce.
+[workspace]
+members = ["hook"]
+
+[lib]
+name = "sidecrab_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "6"
+dirs = "5"
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-single-instance = "2.4.2"
+tauri-plugin-autostart = "2.5.1"

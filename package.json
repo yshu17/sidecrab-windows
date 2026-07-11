@@ -1,0 +1,14 @@
+{
+  "name": "sidecrab",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "sidecar": "cd src-tauri && cargo build --release -p sidecrab-hook && cp target/release/sidecrab-hook binaries/sidecrab-hook-$(rustc -vV | sed -n 's/host: //p')",
+    "dist": "npm run sidecar && tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
