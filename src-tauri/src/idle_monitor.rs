@@ -21,6 +21,19 @@ pub fn user_is_idle() -> bool {
     hid_idle_secs().map(|s| s >= threshold_secs()).unwrap_or(false)
 }
 
+#[cfg(windows)]
+fn hid_idle_secs() -> Option<f64> {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    if unsafe { GetLastInputInfo(&mut info) } == 0 {
+        return None;
+    }
+    let ms = unsafe { GetTickCount() }.wrapping_sub(info.dwTime);
+    Some(ms as f64 / 1000.0)
+}
+
+#[cfg(not(windows))]
 fn hid_idle_secs() -> Option<f64> {
     let out = std::process::Command::new("ioreg")
         .args(["-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime"])

@@ -14,6 +14,8 @@ pub struct Config {
     pub hooks_consent: bool,
     /// The first-run disclaimer was shown (regardless of answer) — never nag again.
     pub consent_asked: bool,
+    /// Hooks come from the Claude Code plugin: no settings.json edits, no consent prompt.
+    pub plugin_managed: bool,
     /// Cosmetic hat: "none" | "top" | "chef" | "fedora" | "heli".
     pub hat: String,
 }
@@ -26,6 +28,7 @@ impl Default for Config {
             wander_enabled: false,
             hooks_consent: false,
             consent_asked: false,
+            plugin_managed: false,
             hat: "none".into(),
         }
     }

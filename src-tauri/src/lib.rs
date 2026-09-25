@@ -12,11 +12,19 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 /// Brew-first update check: compare the newest GitHub tag against this build
 /// and point the user at `brew upgrade` (no in-app installer).
+const UPGRADE_CMD: &str = if cfg!(windows) { "sidecrab-update (rebuild from source)" } else { "brew upgrade sidecrab" };
+
 fn check_for_updates(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let current = app.package_info().version.to_string();
-        let latest = std::process::Command::new("curl")
-            .args(["-s", "--max-time", "10", "https://api.github.com/repos/zvoque/sidecrab/tags"])
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args(["-s", "--max-time", "10", "https://api.github.com/repos/zvoque/sidecrab/tags"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let latest = cmd
             .output()
             .ok()
             .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
@@ -25,7 +33,7 @@ fn check_for_updates(app: AppHandle) {
             Some(l) if l != current => {
                 app.dialog()
                     .message(format!(
-                        "Version {l} is available (you have {current}).\n\nUpdate with:\n  brew upgrade sidecrab"
+                        "Version {l} is available (you have {current}).\n\nUpdate with:\n  {UPGRADE_CMD}"
                     ))
                     .title("Update available")
                     .buttons(MessageDialogButtons::Ok)
@@ -39,7 +47,7 @@ fn check_for_updates(app: AppHandle) {
             }
             None => {
                 app.dialog()
-                    .message("Couldn't reach GitHub to check. Try `brew upgrade sidecrab`.")
+                    .message(format!("Couldn't reach GitHub to check. Try: {UPGRADE_CMD}"))
                     .title("Update check failed")
                     .show(|_| {});
             }
@@ -57,6 +65,7 @@ hooks are kept untouched, and you can remove ours anytime via right-click → \
 fn maybe_ask_consent(app: &AppHandle) {
     let cfg = config::load();
     if cfg.consent_asked
+        || cfg.plugin_managed
         || cfg.hooks_consent
         || hook_installer::hooks_installed(&paths::claude_settings_path())
     {
@@ -157,15 +166,17 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
         MenuItemBuilder::with_id("hooks-install", "Enable activity detection…").build(app).ok()?
     };
 
-    SubmenuBuilder::new(app, "Sidecrab")
+    let mut menu = SubmenuBuilder::new(app, "Sidecrab")
         .item(&size)
         .item(&position)
         .item(&hat)
         .item(&wander)
         .item(&autostart)
-        .separator()
-        .item(&hooks)
-        .separator()
+        .separator();
+    if !cfg.plugin_managed {
+        menu = menu.item(&hooks).separator();
+    }
+    menu
         .items(&[
             &MenuItemBuilder::with_id("update-check", "Check for Updates…").build(app).ok()?,
             &MenuItemBuilder::with_id("quit", "Quit Sidecrab")
@@ -179,6 +190,10 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
 
 /// macOS menu bar: the settings live under the app-name menu (no tray icon).
 pub(crate) fn refresh_app_menu(app: &AppHandle) {
+    // Windows/Linux would attach this as a menu bar to the crab window itself.
+    if !cfg!(target_os = "macos") {
+        return;
+    }
     if let Some(settings) = build_settings_menu(app) {
         if let Ok(menu) = MenuBuilder::new(app).item(&settings).build() {
             let _ = app.set_menu(menu);
@@ -318,6 +333,14 @@ fn migrate_legacy_home() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     migrate_legacy_home();
+    // Launched by the Claude Code plugin's SessionStart hook.
+    if std::env::args().any(|a| a == "--plugin") {
+        let mut c = config::load();
+        if !c.plugin_managed {
+            c.plugin_managed = true;
+            let _ = config::save(&c);
+        }
+    }
     tauri::Builder::default()
         // Second launch = no twin crabs; the existing instance just stays.
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))

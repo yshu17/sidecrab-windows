@@ -21,3 +21,6 @@ art/*.md
 **/._*
 .claude/
 .adr/
+
+# Plugin binaries are copied in by install-windows.ps1
+plugin/bin/*.exe

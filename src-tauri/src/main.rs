@@ -10,6 +10,7 @@ fn main() {
     if !foreground {
         if let Ok(exe) = std::env::current_exe() {
             let ok = std::process::Command::new(exe)
+                .args(std::env::args().skip(1))
                 .arg("--foreground")
                 .env("SIDECRAB_CHILD", "1")
                 .stdin(std::process::Stdio::null())

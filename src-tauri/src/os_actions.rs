@@ -114,9 +114,27 @@ pub fn activate_host(host: String) {
         "ghostty" => "Ghostty",
         other => other, // best-effort: try the raw TERM_PROGRAM value
     };
+    #[cfg(not(windows))]
     let _ = std::process::Command::new("open")
         .args(["-a", app_name])
         .spawn();
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let title = match app_name {
+            "Claude" => "Claude",
+            "Visual Studio Code" => "Visual Studio Code",
+            _ => "Terminal",
+        };
+        let script = format!(
+            "(New-Object -ComObject WScript.Shell).AppActivate('{title}') | Out-Null"
+        );
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
 }
 
 #[tauri::command]
@@ -189,6 +207,15 @@ pub fn hooks_status() -> bool {
 /// The bundled sidecrab-hook sits next to the app executable.
 fn hook_bin_path(app: &AppHandle) -> Option<String> {
     let exe = tauri::process::current_binary(&app.env()).ok()?;
-    Some(exe.parent()?.join("sidecrab-hook").to_string_lossy().into_owned())
+    let name = if cfg!(windows) { "sidecrab-hook.exe" } else { "sidecrab-hook" };
+    let p = exe.parent()?.join(name).to_string_lossy().into_owned();
+    // Claude Code runs hooks through Git Bash on Windows: forward slashes are
+    // safe there and in cmd, backslashes are not.
+    // current_binary() may return a verbatim `\\?\C:\...` path; strip the prefix.
+    Some(if cfg!(windows) {
+        p.trim_start_matches(r"\\?\").replace('\\', "/")
+    } else {
+        p
+    })
 }
 

@@ -18,6 +18,7 @@ fn round_trips() {
         wander_enabled: true,
         hooks_consent: true,
         consent_asked: true,
+        plugin_managed: true,
         hat: "fedora".into(),
     };
     save_to(&path, &c).unwrap();

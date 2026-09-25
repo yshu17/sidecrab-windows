@@ -27,3 +27,6 @@ dirs = "5"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-single-instance = "2.4.2"
 tauri-plugin-autostart = "2.5.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }

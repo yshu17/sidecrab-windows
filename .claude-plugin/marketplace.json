@@ -1,0 +1,11 @@
+{
+  "name": "local",
+  "owner": { "name": "local" },
+  "plugins": [
+    {
+      "name": "sidecrab",
+      "source": "./plugin",
+      "description": "Pixel crab desktop pet that reacts to Claude Code activity (Windows build)"
+    }
+  ]
+}
