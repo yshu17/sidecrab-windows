@@ -6,6 +6,8 @@
 // burst from another session must never wipe a live turn).
 //
 // Usage: sidecrab-hook <prompt|pre|post|notify|permreq|stop|start|end>
+//        sidecrab-hook statusline   (Claude Code statusLine command: records rate
+//        limits to limits.json for the pet and prints a one-line status)
 
 use serde_json::{json, Value};
 use std::io::Read;
@@ -90,6 +92,32 @@ fn clear_stale_state(state_path: &Path, sid: &str) {
     write_atomic(state_path, &out);
 }
 
+/// "2h10m" / "45m" until `resets_at` (epoch seconds).
+fn until(resets_at: i64) -> String {
+    let s = (resets_at - now()).max(0);
+    let (h, m) = (s / 3600, (s % 3600) / 60);
+    if h > 0 {
+        format!("{h}h{m:02}m")
+    } else {
+        format!("{m}m")
+    }
+}
+
+/// statusLine mode. rate_limits only exists for Pro/Max after the first API
+/// response, so an absent window leaves the previous limits.json untouched.
+fn statusline(dir: &Path, p: &Value) {
+    let five = &p["rate_limits"]["five_hour"];
+    let (Some(pct), Some(resets)) = (five["used_percentage"].as_f64(), five["resets_at"].as_i64())
+    else {
+        return;
+    };
+    write_atomic(
+        &dir.join("limits.json"),
+        &json!({ "fiveHour": { "usedPercentage": pct, "resetsAt": resets }, "ts": now() }),
+    );
+    print!("5h {:.0}% \u{00b7} resets in {}", pct, until(resets));
+}
+
 fn main() {
     let event = std::env::args().nth(1).unwrap_or_default();
     let mut raw = String::new();
@@ -97,6 +125,10 @@ fn main() {
     let p: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
 
     let dir = home();
+    if event == "statusline" {
+        statusline(&dir, &p);
+        return;
+    }
     let state_path = dir.join("state.json");
     let sess_dir = dir.join("sessions.d");
     let sid = safe_id(&p);

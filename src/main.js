@@ -4,6 +4,7 @@ import { SpriteRenderer } from "./sprites.js";
 import { StateMachine } from "./state-machine.js";
 import { attachInput } from "./input.js";
 import { attachBehavior } from "./behavior.js";
+import { attachStatus } from "./status.js";
 
 const IN_TAURI = typeof window.__TAURI__ !== "undefined";
 
@@ -22,7 +23,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     const { invoke } = window.__TAURI__.core;
     invoke("get_config").then((c) => c && renderer.setHat(c.hat));
     await listen("hat-changed", (e) => renderer.setHat(e.payload));
+    const status = attachStatus(document.getElementById("status"));
+    await listen("claude-limits", (e) => status.setLimits(e.payload));
     await listen("claude-state", (e) => {
+      status.setState(e.payload);
       if (e.payload?.host) host = e.payload.host;
       behavior.onClaudeState(e.payload); // wander preemption before the anim swap
       sm.apply(e.payload);

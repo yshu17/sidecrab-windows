@@ -44,6 +44,8 @@ There are two processes and they communicate only through files:
    - `input.js` handles drag, double-click to activate the host app, and right-click to open the menu.
    - `sprites.js`/`frames.js` hold the pixel frames.
 
+**Status label.** A strip under the crab (`src/status.js`, `#status`, `STATUS_H` in `os_actions.rs`, which must match the CSS height) shows the hook's `label` plus the 5-hour rate limit. Limits come from `sidecrab-hook statusline`, configured as the Claude Code `statusLine` command in `~/.claude/settings.json` (plugins cannot ship a main statusLine). That command writes `limits.json`, which `state_watcher.rs` forwards as `claude-limits`. `rate_limits` exists only for Pro/Max, after the first API response.
+
 `paths::home()` in the app and `home()` in the hook are intentionally duplicated. Keep them in sync.
 
 The hook records `TERM_PROGRAM` as `host`. `activate_host` uses `host` on double-click to focus the Claude/terminal window: it runs `open -a` on macOS and PowerShell `AppActivate` on Windows.

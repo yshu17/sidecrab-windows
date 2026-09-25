@@ -33,8 +33,11 @@ export function attachInput({ renderer, sm, getHost }) {
   };
 
   const pushBounds = () => {
+    // bounds() is in canvas fractions; the canvas sits above the status strip,
+    // so rescale y into window fractions.
     const b = renderer.bounds();
-    invoke("set_opaque_rect", { x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 });
+    const k = renderer.canvas.clientHeight / window.innerHeight || 1;
+    invoke("set_opaque_rect", { x0: b.x0, y0: b.y0 * k, x1: b.x1, y1: b.y1 * k });
   };
   pushBounds();
 

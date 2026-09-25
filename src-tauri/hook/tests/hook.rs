@@ -173,3 +173,28 @@ fn end_of_other_session_leaves_live_state_alone() {
     // Live turn owned by "abc" must survive another session's end.
     assert_eq!(state(&home)["state"], "tool");
 }
+
+#[test]
+fn statusline_records_five_hour_limit() {
+    let home = tmp_home("statusline");
+    run_hook(
+        &home,
+        "statusline",
+        r#"{"rate_limits":{"five_hour":{"used_percentage":42.4,"resets_at":4102444800}}}"#,
+        &[],
+    );
+    let raw = std::fs::read_to_string(home.join("limits.json")).expect("limits.json");
+    let l: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(l["fiveHour"]["usedPercentage"], 42.4);
+    assert_eq!(l["fiveHour"]["resetsAt"], 4102444800i64);
+    assert!(!home.join("state.json").exists(), "statusline must not touch pet state");
+}
+
+#[test]
+fn statusline_without_rate_limits_keeps_previous_limits() {
+    let home = tmp_home("statusline-absent");
+    std::fs::write(home.join("limits.json"), r#"{"fiveHour":{"usedPercentage":7}}"#).unwrap();
+    run_hook(&home, "statusline", r#"{"model":{"display_name":"Opus"}}"#, &[]);
+    let raw = std::fs::read_to_string(home.join("limits.json")).unwrap();
+    assert!(raw.contains("\"usedPercentage\":7"));
+}

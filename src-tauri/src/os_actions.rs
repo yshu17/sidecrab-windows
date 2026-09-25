@@ -11,12 +11,16 @@ const SIZES: [(&str, f64, f64); 3] = [
     ("L", 204.0, 192.0),
 ];
 
+/// Logical height of the status label strip under the crab (see styles.css).
+pub const STATUS_H: f64 = 18.0;
+
 pub fn logical_size(size: &str) -> (f64, f64) {
-    SIZES
+    let (w, h) = SIZES
         .iter()
         .find(|(s, _, _)| *s == size)
         .map(|&(_, w, h)| (w, h))
-        .unwrap_or((153.0, 144.0))
+        .unwrap_or((153.0, 144.0));
+    (w, h + STATUS_H)
 }
 
 /// Physical position of a monitor corner ("tl"|"tr"|"bl"|"br") for the current

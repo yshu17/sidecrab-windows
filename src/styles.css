@@ -16,13 +16,35 @@ body {
   width: 100vw;
   height: 100vh;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
 }
 
 /* Pixel art: backing store matches physical pixels; keep hard edges regardless. */
 #crab {
   width: 100%;
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
   image-rendering: pixelated;
 }
+
+/* Status label under the crab: what Claude is doing + 5-hour limit.
+   Height must match STATUS_H in os_actions.rs. Click-through (outside the
+   opaque rect), so it never blocks the desktop. */
+#status {
+  flex: 0 0 18px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font: 600 10px/16px system-ui, "Segoe UI", sans-serif;
+  color: #fff;
+  background: rgba(20, 20, 24, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+#status:empty { visibility: hidden; }
+#status .warn { color: #ffc857; }
+#status .crit { color: #ff6b6b; }
