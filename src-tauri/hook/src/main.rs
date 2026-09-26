@@ -97,6 +97,63 @@ fn clear_stale_state(state_path: &Path, sid: &str) {
     write_atomic(state_path, &out);
 }
 
+/// "claude-opus-5-5" -> "Opus 5.5", "claude-haiku-4-5-20251001" -> "Haiku 4.5".
+fn model_name(id: &str) -> String {
+    let mut parts = id.trim_start_matches("claude-").split('-').filter(|p| p.len() < 8);
+    let family = parts.next().unwrap_or(id);
+    let mut name: String = family[..1].to_uppercase() + &family[1..];
+    let version: Vec<&str> = parts.collect();
+    if !version.is_empty() {
+        name.push(' ');
+        name.push_str(&version.join("."));
+    }
+    name
+}
+
+/// Context window by model: every current model has 1M except Haiku (200K).
+/// Used only when the statusLine hasn't reported context_window_size.
+fn context_size(model_id: &str) -> f64 {
+    if model_id.contains("haiku") { 200_000.0 } else { 1_000_000.0 }
+}
+
+/// Context usage from the transcript's most recent main-chain API response —
+/// the fallback when no statusLine runs (the Claude desktop app never runs one).
+/// Reads only the tail of the file.
+fn transcript_usage(path: &str) -> Option<Value> {
+    use std::io::{Seek, SeekFrom};
+    const TAIL: u64 = 512 * 1024;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    text.lines().rev().find_map(|line| {
+        let e: Value = serde_json::from_str(line).ok()?;
+        if e["type"] != "assistant" || e["isSidechain"] == true {
+            return None;
+        }
+        let m = &e["message"];
+        let u = &m["usage"];
+        let input: f64 = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
+            .iter()
+            .filter_map(|k| u[*k].as_f64())
+            .sum();
+        let model = m["model"].as_str()?;
+        if input == 0.0 || model.starts_with('<') {
+            return None; // synthetic/error entries carry no real usage
+        }
+        let size = context_size(model);
+        Some(json!({
+            "model": model_name(model),
+            "tokens": input,
+            "contextSize": size,
+            "contextPct": input / size * 100.0,
+            "source": "transcript",
+        }))
+    })
+}
+
 /// Create/refresh sessions.d/<sid>: merge `extra` into the existing record and
 /// stamp the owning Claude Code process, which the app polls for liveness
 /// (SessionEnd never fires on terminal close or kill).
@@ -156,21 +213,23 @@ fn until(resets_at: i64) -> String {
 fn statusline(dir: &Path, p: &Value) {
     let mut parts = Vec::new();
     let cw = &p["context_window"];
-    let tokens = match (cw["total_input_tokens"].as_f64(), cw["total_output_tokens"].as_f64()) {
-        (Some(i), o) => Some(i + o.unwrap_or(0.0)),
-        _ => None,
-    };
-    let mut usage = json!({});
+    // Input side only (incl. cache reads/writes): what occupies the window, and
+    // the same basis as used_percentage and Claude Code's "Context window".
+    let tokens = cw["total_input_tokens"].as_f64();
+    let mut usage = json!({ "source": "statusline" });
+    if let Some(size) = cw["context_window_size"].as_f64() {
+        usage["contextSize"] = json!(size);
+    }
     if let Some(m) = p["model"]["display_name"].as_str() {
         usage["model"] = json!(m);
         parts.push(m.to_string());
     }
     if let Some(t) = tokens {
         usage["tokens"] = json!(t);
-        let mut s = format!("{} tokens", compact(t));
+        let mut s = format!("{} ctx", compact(t));
         if let Some(pct) = cw["used_percentage"].as_f64() {
             usage["contextPct"] = json!(pct);
-            s.push_str(&format!(" ({pct:.0}% ctx)"));
+            s.push_str(&format!(" ({pct:.0}%)"));
         }
         parts.push(s);
     }
@@ -220,8 +279,20 @@ fn main() {
     }
 
     // Register the session on any activity too, so sessions predating hook install
-    // are tracked once they do anything.
-    touch_session(&sess_dir, &sid, json!({}));
+    // are tracked once they do anything. Without a statusLine feeding this
+    // session (the desktop app never runs one), refresh context usage from the
+    // transcript after each API response.
+    let mut usage = json!({});
+    if matches!(event.as_str(), "pre" | "post" | "stop" | "fail") {
+        let fed_by_statusline =
+            read_state(&sess_dir.join(&sid))["source"].as_str() == Some("statusline");
+        if !fed_by_statusline {
+            if let Some(u) = p["transcript_path"].as_str().and_then(transcript_usage) {
+                usage = u;
+            }
+        }
+    }
+    touch_session(&sess_dir, &sid, usage);
 
     let prev = read_state(&state_path);
     let ts = now();

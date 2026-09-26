@@ -6,6 +6,7 @@ pub mod os_actions;
 pub mod paths;
 pub mod sessions;
 pub mod state_watcher;
+pub mod usage_api;
 
 use std::sync::Mutex;
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -401,6 +402,7 @@ pub fn run() {
             refresh_app_menu(app.handle()); // settings under the app-name menu too
             state_watcher::spawn(app.handle().clone());
             sessions::spawn(app.handle().clone());
+            usage_api::spawn();
             spawn_click_through_poller(app.handle().clone());
             idle_monitor::spawn(app.handle().clone());
             // Pre-rename hook entries point at a binary that no longer exists —

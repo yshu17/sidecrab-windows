@@ -228,11 +228,11 @@ fn statusline_records_session_token_usage() {
     );
     let rec = session(&home, "s1");
     assert_eq!(rec["model"], "Opus 5.5");
-    assert_eq!(rec["tokens"], 12540.0);
+    assert_eq!(rec["tokens"], 12040.0); // input side only
     assert_eq!(rec["contextPct"], 6.0);
     // Before the first API response context_window is null: keep the last value.
     run_hook(&home, "statusline", r#"{"session_id":"s1","context_window":{"total_input_tokens":null}}"#, &[]);
-    assert_eq!(session(&home, "s1")["tokens"], 12540.0);
+    assert_eq!(session(&home, "s1")["tokens"], 12040.0);
 }
 
 #[test]
@@ -243,4 +243,35 @@ fn stop_failure_sets_error_state() {
     let s = state(&home);
     assert_eq!(s["state"], "error");
     assert_eq!(s["label"], "Error: rate_limit");
+}
+
+#[test]
+fn transcript_fallback_fills_context_usage() {
+    let home = tmp_home("transcript");
+    let t = home.join("t.jsonl");
+    let lines = [
+        r#"{"type":"assistant","isSidechain":false,"message":{"model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_creation_input_tokens":1000,"cache_read_input_tokens":299000,"output_tokens":50}}}"#,
+        r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":9,"cache_read_input_tokens":9}}}"#,
+        r#"{"type":"user","message":{"content":"x"}}"#,
+    ];
+    std::fs::write(&t, lines.join("\n")).unwrap();
+    let payload = serde_json::json!({"session_id": "s1", "tool_name": "Read", "transcript_path": t}).to_string();
+    run_hook(&home, "post", &payload, &[]);
+    let rec = session(&home, "s1");
+    assert_eq!(rec["model"], "Opus 5.5");
+    assert_eq!(rec["tokens"], 300002.0); // input side only; subagent line ignored
+    assert_eq!(rec["contextSize"], 1000000.0);
+    assert_eq!(rec["source"], "transcript");
+}
+
+#[test]
+fn statusline_session_is_not_overwritten_by_transcript() {
+    let home = tmp_home("statusline-wins");
+    run_hook(&home, "statusline",
+        r#"{"session_id":"s1","context_window":{"total_input_tokens":5000,"context_window_size":200000,"used_percentage":2.5}}"#, &[]);
+    let t = home.join("t.jsonl");
+    std::fs::write(&t, r#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":999999}}}"#).unwrap();
+    let payload = serde_json::json!({"session_id": "s1", "transcript_path": t}).to_string();
+    run_hook(&home, "post", &payload, &[]);
+    assert_eq!(session(&home, "s1")["tokens"], 5000.0);
 }

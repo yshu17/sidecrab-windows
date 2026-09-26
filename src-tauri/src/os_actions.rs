@@ -12,7 +12,7 @@ const SIZES: [(&str, f64, f64); 3] = [
 ];
 
 /// Logical height of the status label strip under the crab (see styles.css).
-pub const STATUS_H: f64 = 18.0;
+pub const STATUS_H: f64 = 42.0;
 
 pub fn logical_size(size: &str) -> (f64, f64) {
     let (w, h) = SIZES
