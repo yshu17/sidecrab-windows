@@ -64,6 +64,16 @@
         ]
       }
     ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/sidecrab-hook.exe\" fail"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [

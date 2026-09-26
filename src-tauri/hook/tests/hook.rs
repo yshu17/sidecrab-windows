@@ -198,3 +198,49 @@ fn statusline_without_rate_limits_keeps_previous_limits() {
     let raw = std::fs::read_to_string(home.join("limits.json")).unwrap();
     assert!(raw.contains("\"usedPercentage\":7"));
 }
+
+fn session(home: &Path, sid: &str) -> serde_json::Value {
+    let raw = std::fs::read_to_string(home.join("sessions.d").join(sid)).expect("session record");
+    serde_json::from_str(&raw).unwrap()
+}
+
+#[test]
+fn session_record_is_json_with_owner_process() {
+    let home = tmp_home("session-json");
+    run_hook(&home, "start", r#"{"session_id":"s1"}"#, &[]);
+    let rec = session(&home, "s1");
+    assert!(rec["ts"].as_i64().unwrap() > 0);
+    // The owner is only found when an ancestor is claude.exe (e.g. cargo run from
+    // a Claude Code session); when present it carries the PID-reuse guard.
+    assert_eq!(rec["claudePid"].is_null(), rec["claudeStart"].is_null());
+}
+
+#[test]
+fn statusline_records_session_token_usage() {
+    let home = tmp_home("statusline-usage");
+    run_hook(&home, "start", r#"{"session_id":"s1"}"#, &[]);
+    run_hook(
+        &home,
+        "statusline",
+        r#"{"session_id":"s1","model":{"display_name":"Opus 5.5"},
+            "context_window":{"total_input_tokens":12040,"total_output_tokens":500,"used_percentage":6}}"#,
+        &[],
+    );
+    let rec = session(&home, "s1");
+    assert_eq!(rec["model"], "Opus 5.5");
+    assert_eq!(rec["tokens"], 12540.0);
+    assert_eq!(rec["contextPct"], 6.0);
+    // Before the first API response context_window is null: keep the last value.
+    run_hook(&home, "statusline", r#"{"session_id":"s1","context_window":{"total_input_tokens":null}}"#, &[]);
+    assert_eq!(session(&home, "s1")["tokens"], 12540.0);
+}
+
+#[test]
+fn stop_failure_sets_error_state() {
+    let home = tmp_home("fail");
+    run_hook(&home, "prompt", r#"{"session_id":"s1"}"#, &[]);
+    run_hook(&home, "fail", r#"{"session_id":"s1","error_type":"rate_limit"}"#, &[]);
+    let s = state(&home);
+    assert_eq!(s["state"], "error");
+    assert_eq!(s["label"], "Error: rate_limit");
+}

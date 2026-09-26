@@ -25,11 +25,20 @@ window.addEventListener("DOMContentLoaded", async () => {
     await listen("hat-changed", (e) => renderer.setHat(e.payload));
     const status = attachStatus(document.getElementById("status"));
     await listen("claude-limits", (e) => status.setLimits(e.payload));
+    await listen("claude-sessions", (e) => status.setSessions(e.payload));
     await listen("claude-state", (e) => {
       status.setState(e.payload);
       if (e.payload?.host) host = e.payload.host;
       behavior.onClaudeState(e.payload); // wander preemption before the anim swap
       sm.apply(e.payload);
+    });
+    // Rust emits its first events before these listeners exist; pull the current
+    // picture once they're attached so the bar is filled from the first frame.
+    invoke("status_snapshot").then((snap) => {
+      if (!snap) return;
+      status.setLimits(snap.limits);
+      status.setSessions(snap.sessions);
+      status.setState(snap.state);
     });
     // crab-hover is consumed by behavior.js (forwarding + harassment detection)
   } else {

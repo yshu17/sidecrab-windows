@@ -1,17 +1,22 @@
 // Standalone hook handler invoked by Claude Code hooks. Reads the hook JSON payload
 // on stdin, maps the event to a pet state, and atomically writes state.json under
 // SIDECRAB_HOME (default: ~/Library/Application Support/sidecrab). Also maintains
-// sessions.d/ (one file per live session) and, on session start/end, clears a stale
+// sessions.d/ (one JSON file per live session: the owning claude.exe pid/start time
+// for liveness, plus model/token usage from the statusLine) and, on session start/end, clears a stale
 // frozen state — but only if that state is owned by the same session id (a warmup
 // burst from another session must never wipe a live turn).
 //
-// Usage: sidecrab-hook <prompt|pre|post|notify|permreq|stop|start|end>
+// Usage: sidecrab-hook <prompt|pre|post|notify|permreq|stop|fail|start|end>
 //        sidecrab-hook statusline   (Claude Code statusLine command: records rate
-//        limits to limits.json for the pet and prints a one-line status)
+//        limits to limits.json and the session's token usage for the pet, and
+//        prints a one-line status)
 
 use serde_json::{json, Value};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+
+#[path = "../../src/claude_proc.rs"]
+mod claude_proc;
 
 // Mirror of sidecrab_lib::paths::home() — duplicated so this crate stays free
 // of the tauri dependency tree. Keep the two in sync.
@@ -92,6 +97,46 @@ fn clear_stale_state(state_path: &Path, sid: &str) {
     write_atomic(state_path, &out);
 }
 
+/// Create/refresh sessions.d/<sid>: merge `extra` into the existing record and
+/// stamp the owning Claude Code process, which the app polls for liveness
+/// (SessionEnd never fires on terminal close or kill).
+fn touch_session(sess_dir: &Path, sid: &str, extra: Value) {
+    if sid.is_empty() {
+        return;
+    }
+    let path = sess_dir.join(sid);
+    let mut rec = read_state(&path);
+    if !rec.is_object() {
+        rec = json!({});
+    }
+    if rec["claudePid"].is_null() {
+        if let Some((pid, start)) = claude_proc::claude_ancestor() {
+            rec["claudePid"] = json!(pid);
+            rec["claudeStart"] = json!(start);
+        }
+    }
+    if let (Some(r), Some(e)) = (rec.as_object_mut(), extra.as_object()) {
+        for (k, v) in e {
+            r.insert(k.clone(), v.clone());
+        }
+    }
+    rec["ts"] = json!(now());
+    write_atomic(&path, &rec);
+}
+
+/// 12540 -> "12.5k", 148000 -> "148k" (same rule as status.js).
+fn compact(n: f64) -> String {
+    if n >= 1e6 {
+        format!("{:.1}M", n / 1e6)
+    } else if n >= 99_950.0 {
+        format!("{:.0}k", n / 1e3)
+    } else if n >= 1e3 {
+        format!("{:.1}k", n / 1e3)
+    } else {
+        format!("{n:.0}")
+    }
+}
+
 /// "2h10m" / "45m" until `resets_at` (epoch seconds).
 fn until(resets_at: i64) -> String {
     let s = (resets_at - now()).max(0);
@@ -103,19 +148,43 @@ fn until(resets_at: i64) -> String {
     }
 }
 
-/// statusLine mode. rate_limits only exists for Pro/Max after the first API
-/// response, so an absent window leaves the previous limits.json untouched.
+/// statusLine mode: runs after every assistant message (and on refreshInterval)
+/// with the session's live data. Token usage goes into that session's registry
+/// record; rate limits are account-wide, so they go to limits.json. rate_limits
+/// only exists for Pro/Max after the first API response, and context_window
+/// usage is null until then — absent values keep the previous record.
 fn statusline(dir: &Path, p: &Value) {
-    let five = &p["rate_limits"]["five_hour"];
-    let (Some(pct), Some(resets)) = (five["used_percentage"].as_f64(), five["resets_at"].as_i64())
-    else {
-        return;
+    let mut parts = Vec::new();
+    let cw = &p["context_window"];
+    let tokens = match (cw["total_input_tokens"].as_f64(), cw["total_output_tokens"].as_f64()) {
+        (Some(i), o) => Some(i + o.unwrap_or(0.0)),
+        _ => None,
     };
-    write_atomic(
-        &dir.join("limits.json"),
-        &json!({ "fiveHour": { "usedPercentage": pct, "resetsAt": resets }, "ts": now() }),
-    );
-    print!("5h {:.0}% \u{00b7} resets in {}", pct, until(resets));
+    let mut usage = json!({});
+    if let Some(m) = p["model"]["display_name"].as_str() {
+        usage["model"] = json!(m);
+        parts.push(m.to_string());
+    }
+    if let Some(t) = tokens {
+        usage["tokens"] = json!(t);
+        let mut s = format!("{} tokens", compact(t));
+        if let Some(pct) = cw["used_percentage"].as_f64() {
+            usage["contextPct"] = json!(pct);
+            s.push_str(&format!(" ({pct:.0}% ctx)"));
+        }
+        parts.push(s);
+    }
+    touch_session(&dir.join("sessions.d"), &safe_id(p), usage);
+
+    let five = &p["rate_limits"]["five_hour"];
+    if let (Some(pct), Some(resets)) = (five["used_percentage"].as_f64(), five["resets_at"].as_i64()) {
+        write_atomic(
+            &dir.join("limits.json"),
+            &json!({ "fiveHour": { "usedPercentage": pct, "resetsAt": resets }, "ts": now() }),
+        );
+        parts.push(format!("5h {:.0}% (resets in {})", pct, until(resets)));
+    }
+    print!("{}", parts.join(" \u{00b7} "));
 }
 
 fn main() {
@@ -136,10 +205,7 @@ fn main() {
     // Session lifecycle events only maintain the registry + stale-state guard.
     match event.as_str() {
         "start" => {
-            let _ = std::fs::create_dir_all(&sess_dir);
-            if !sid.is_empty() {
-                let _ = std::fs::write(sess_dir.join(&sid), "");
-            }
+            touch_session(&sess_dir, &sid, json!({}));
             clear_stale_state(&state_path, &sid);
             return;
         }
@@ -155,10 +221,7 @@ fn main() {
 
     // Register the session on any activity too, so sessions predating hook install
     // are tracked once they do anything.
-    if !sid.is_empty() {
-        let _ = std::fs::create_dir_all(&sess_dir);
-        let _ = std::fs::write(sess_dir.join(&sid), "");
-    }
+    touch_session(&sess_dir, &sid, json!({}));
 
     let prev = read_state(&state_path);
     let ts = now();
@@ -208,6 +271,15 @@ fn main() {
         "stop" => {
             started_at = 0;
             ("done", "Done".to_string())
+        }
+        // StopFailure: the turn died on an API error (rate limit, overload, auth…).
+        "fail" => {
+            started_at = 0;
+            let kind = ["error_type", "error", "reason"]
+                .iter()
+                .find_map(|k| p[*k].as_str())
+                .unwrap_or("unknown");
+            ("error", format!("Error: {kind}"))
         }
         _ => return,
     };

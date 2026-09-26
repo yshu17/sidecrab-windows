@@ -1,8 +1,10 @@
+pub mod claude_proc;
 pub mod config;
 pub mod hook_installer;
 pub mod idle_monitor;
 pub mod os_actions;
 pub mod paths;
+pub mod sessions;
 pub mod state_watcher;
 
 use std::sync::Mutex;
@@ -335,6 +337,7 @@ pub fn run() {
     migrate_legacy_home();
     // Launched by the Claude Code plugin's SessionStart hook.
     if std::env::args().any(|a| a == "--plugin") {
+        sessions::exit_with_claude();
         let mut c = config::load();
         if !c.plugin_managed {
             c.plugin_managed = true;
@@ -343,7 +346,12 @@ pub fn run() {
     }
     tauri::Builder::default()
         // Second launch = no twin crabs; the existing instance just stays.
-        .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
+        // A plugin launch from a new session re-arms the Claude-bound lifecycle.
+        .plugin(tauri_plugin_single_instance::init(|_app, args, _cwd| {
+            if args.iter().any(|a| a == "--plugin") {
+                sessions::exit_with_claude();
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--foreground"]), // agent child must not re-daemonize
@@ -368,6 +376,7 @@ pub fn run() {
             os_actions::hooks_remove,
             os_actions::hooks_status,
             idle_monitor::user_is_idle,
+            sessions::status_snapshot,
         ])
         .setup(|app| {
             let win = app.get_webview_window("main").expect("main window");
@@ -391,6 +400,7 @@ pub fn run() {
             app.on_menu_event(|app, event| on_menu(app, event.id().as_ref()));
             refresh_app_menu(app.handle()); // settings under the app-name menu too
             state_watcher::spawn(app.handle().clone());
+            sessions::spawn(app.handle().clone());
             spawn_click_through_poller(app.handle().clone());
             idle_monitor::spawn(app.handle().clone());
             // Pre-rename hook entries point at a binary that no longer exists —

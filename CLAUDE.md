@@ -13,6 +13,7 @@ cargo test --workspace                     # all tests
 cargo test --test installer                # one integration test file (tests/installer.rs)
 cargo test -p sidecrab-hook                # hook binary tests (hook/tests/hook.rs)
 cargo test --test config round_trips       # filter by test name
+cargo test --test sessions                 # session liveness / pruning
 ```
 
 Build (the hook sidecar must exist before `tauri build`, because tauri-build validates `externalBin`):
@@ -31,7 +32,7 @@ Frontend art iteration without Tauri: open `src/index.html` in a browser. Keys 1
 
 There are two processes and they communicate only through files:
 
-1. **`sidecrab-hook`** (`src-tauri/hook/src/main.rs`) is a standalone binary with no Tauri dependencies. Claude Code runs it for each hook event as `sidecrab-hook <prompt|pre|post|notify|permreq|stop|start|end>`, with the event JSON on stdin. It atomically writes `state.json` and keeps `sessions.d/<session_id>` under `SIDECRAB_HOME` (default `dirs::config_dir()/sidecrab`, which is `%APPDATA%\sidecrab` on Windows). It lives in its own crate so it builds fast and avoids the externalBin chicken-and-egg.
+1. **`sidecrab-hook`** (`src-tauri/hook/src/main.rs`) is a standalone binary with no Tauri dependencies. Claude Code runs it for each hook event as `sidecrab-hook <prompt|pre|post|notify|permreq|stop|fail|start|end>`, with the event JSON on stdin. It atomically writes `state.json` and keeps `sessions.d/<session_id>` under `SIDECRAB_HOME` (default `dirs::config_dir()/sidecrab`, which is `%APPDATA%\sidecrab` on Windows). It lives in its own crate so it builds fast and avoids the externalBin chicken-and-egg.
 2. **The app** (`src-tauri/src/`):
    - `state_watcher.rs` watches the state *directory*, not the file, because tmp+rename replaces the inode. It emits `claude-state` to the webview.
    - `lib.rs` owns the setup, the right-click settings menu, the consent dialog, and the click-through poller. The poller toggles `set_ignore_cursor_events` using the opaque sprite rect that the frontend pushes.
@@ -44,7 +45,9 @@ There are two processes and they communicate only through files:
    - `input.js` handles drag, double-click to activate the host app, and right-click to open the menu.
    - `sprites.js`/`frames.js` hold the pixel frames.
 
-**Status label.** A strip under the crab (`src/status.js`, `#status`, `STATUS_H` in `os_actions.rs`, which must match the CSS height) shows the hook's `label` plus the 5-hour rate limit. Limits come from `sidecrab-hook statusline`, configured as the Claude Code `statusLine` command in `~/.claude/settings.json` (plugins cannot ship a main statusLine). That command writes `limits.json`, which `state_watcher.rs` forwards as `claude-limits`. `rate_limits` exists only for Pro/Max, after the first API response.
+**Status bar.** A fixed-size strip under the crab (`#status` in `index.html`, `src/status.js`; `STATUS_H` in `os_actions.rs` must match the CSS height) is always visible: dot · activity or model · tokens · context % · 5h limit, with `--` placeholders. The dot reflects work status only: green thinking/tool, yellow permission, red `error` (StopFailure) or no hook event for 10 min while working, grey idle. Token usage and model come from `sidecrab-hook statusline`, configured as the Claude Code `statusLine` command in `~/.claude/settings.json` (plugins cannot ship a main statusLine). It stores `context_window.total_input_tokens + total_output_tokens`, `used_percentage` and the model in that session's `sessions.d` record, and the account-wide 5-hour limit in `limits.json`. The webview pulls `status_snapshot` once its listeners are attached, because events emitted before that are lost.
+
+**Sessions and lifecycle** (`sessions.rs`, `claude_proc.rs`). Each `sessions.d/<session_id>` record is JSON. The hook stamps it with the nearest `claude.exe` ancestor (pid + creation time, found through ToolHelp). `sessions.rs` polls every 2 s: records whose process is gone are deleted, because SessionEnd does not fire on terminal close or kill. It emits `claude-sessions`. When launched with `--plugin` (or when a later `--plugin` launch is forwarded by single-instance), the pet exits once a session has been seen and none remain. A manual launch without `--plugin` is not bound to Claude. `claude_proc.rs` is compiled into the hook crate via `#[path]`. On non-Windows there is no owner pid, so records live until SessionEnd.
 
 `paths::home()` in the app and `home()` in the hook are intentionally duplicated. Keep them in sync.
 
