@@ -264,7 +264,9 @@ fn main() {
     // Session lifecycle events only maintain the registry + stale-state guard.
     match event.as_str() {
         "start" => {
-            touch_session(&sess_dir, &sid, json!({}));
+            // A resumed/continued session already has usage in its transcript.
+            let usage = p["transcript_path"].as_str().and_then(transcript_usage).unwrap_or(json!({}));
+            touch_session(&sess_dir, &sid, usage);
             clear_stale_state(&state_path, &sid);
             return;
         }
@@ -283,7 +285,7 @@ fn main() {
     // session (the desktop app never runs one), refresh context usage from the
     // transcript after each API response.
     let mut usage = json!({});
-    if matches!(event.as_str(), "pre" | "post" | "stop" | "fail") {
+    if matches!(event.as_str(), "prompt" | "pre" | "post" | "stop" | "fail") {
         let fed_by_statusline =
             read_state(&sess_dir.join(&sid))["source"].as_str() == Some("statusline");
         if !fed_by_statusline {

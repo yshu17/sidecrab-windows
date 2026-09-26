@@ -275,3 +275,15 @@ fn statusline_session_is_not_overwritten_by_transcript() {
     run_hook(&home, "post", &payload, &[]);
     assert_eq!(session(&home, "s1")["tokens"], 5000.0);
 }
+
+#[test]
+fn session_start_fills_usage_from_resumed_transcript() {
+    let home = tmp_home("start-usage");
+    let t = home.join("t.jsonl");
+    std::fs::write(&t, r#"{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"cache_read_input_tokens":90}}}"#).unwrap();
+    let payload = serde_json::json!({"session_id": "s1", "transcript_path": t}).to_string();
+    run_hook(&home, "start", &payload, &[]);
+    let rec = session(&home, "s1");
+    assert_eq!(rec["tokens"], 100.0);
+    assert_eq!(rec["model"], "Sonnet 5");
+}

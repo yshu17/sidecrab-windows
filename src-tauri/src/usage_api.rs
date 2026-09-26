@@ -14,8 +14,17 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 const URL: &str = "https://api.anthropic.com/api/oauth/usage";
-const INTERVAL: Duration = Duration::from_secs(90);
-const MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
+const INTERVAL: u64 = 180;
+const MAX_BACKOFF: u64 = 30 * 60;
+
+/// Outcome of one request. The endpoint answers 429 with Retry-After, and
+/// asking again early seems to extend the block, so the wait is honoured and
+/// persisted (the pet restarts with every Claude Code session).
+pub enum Fetch {
+    Ok(Value),
+    RetryAfter(u64),
+    Failed,
+}
 
 fn access_token() -> Option<String> {
     let path = dirs::home_dir()?.join(".claude").join(".credentials.json");
@@ -37,9 +46,9 @@ fn now_ms() -> i64 {
 }
 
 /// Headers go through stdin (`-H @-`) so the token never appears on a command line.
-fn fetch(token: &str) -> Option<Value> {
+fn fetch(token: &str) -> Fetch {
     let mut cmd = Command::new("curl");
-    cmd.args(["-s", "--max-time", "15", "-w", "\n%{http_code}", "-H", "@-", URL])
+    cmd.args(["-s", "--max-time", "15", "-w", "\n%{http_code} %header{retry-after}", "-H", "@-", URL])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -48,18 +57,22 @@ fn fetch(token: &str) -> Option<Value> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let mut child = cmd.spawn().ok()?;
+    let Ok(mut child) = cmd.spawn() else { return Fetch::Failed };
     let headers = format!(
         "Authorization: Bearer {token}\nanthropic-beta: oauth-2025-04-20\nUser-Agent: sidecrab\n"
     );
-    child.stdin.take()?.write_all(headers.as_bytes()).ok()?;
-    let out = child.wait_with_output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let (body, code) = text.rsplit_once('\n')?;
-    if code.trim() != "200" {
-        return None;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(headers.as_bytes());
     }
-    serde_json::from_str(body).ok()
+    let Ok(out) = child.wait_with_output() else { return Fetch::Failed };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let Some((body, status)) = text.rsplit_once('\n') else { return Fetch::Failed };
+    let mut status = status.split_whitespace();
+    match (status.next(), status.next().and_then(|s| s.parse::<u64>().ok())) {
+        (Some("200"), _) => serde_json::from_str(body).map_or(Fetch::Failed, Fetch::Ok),
+        (Some("429"), Some(secs)) => Fetch::RetryAfter(secs),
+        _ => Fetch::Failed,
+    }
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant).
@@ -107,27 +120,63 @@ pub fn to_limits(resp: &Value, now_s: i64) -> Option<Value> {
     }))
 }
 
+/// Earliest time (epoch s) the next request may go out; survives restarts.
+fn not_before_path() -> std::path::PathBuf {
+    crate::paths::home().join("usage_api.json")
+}
+
+fn load_not_before() -> i64 {
+    std::fs::read_to_string(not_before_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v["notBefore"].as_i64())
+        .unwrap_or(0)
+}
+
+fn save_not_before(t: i64) {
+    let _ = std::fs::write(not_before_path(), json!({ "notBefore": t }).to_string());
+}
+
 pub fn spawn() {
     std::thread::spawn(|| {
         let path = crate::paths::home().join("limits.json");
-        let mut wait = INTERVAL;
+        let mut backoff = INTERVAL;
         loop {
-            let limits = access_token()
-                .and_then(|t| fetch(&t))
-                .and_then(|r| to_limits(&r, now_ms() / 1000));
-            match limits {
-                Some(l) => {
-                    let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
-                    let tmp = path.with_extension("json.tmp");
-                    if std::fs::write(&tmp, l.to_string()).is_ok() {
-                        let _ = std::fs::rename(&tmp, &path); // watcher emits claude-limits
-                    }
-                    wait = INTERVAL;
-                }
-                // 429 / expired / offline / shape change: keep last data, back off.
-                None => wait = (wait * 2).min(MAX_BACKOFF),
+            let now = now_ms() / 1000;
+            let not_before = load_not_before();
+            if now < not_before {
+                std::thread::sleep(Duration::from_secs((not_before - now) as u64));
+                continue;
             }
-            std::thread::sleep(wait);
+            let result = match access_token() {
+                Some(t) => fetch(&t),
+                None => Fetch::Failed,
+            };
+            let wait = match result {
+                Fetch::Ok(r) => match to_limits(&r, now) {
+                    Some(l) => {
+                        let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+                        let tmp = path.with_extension("json.tmp");
+                        if std::fs::write(&tmp, l.to_string()).is_ok() {
+                            let _ = std::fs::rename(&tmp, &path); // watcher emits claude-limits
+                        }
+                        backoff = INTERVAL;
+                        INTERVAL
+                    }
+                    None => {
+                        backoff = (backoff * 2).min(MAX_BACKOFF); // shape changed
+                        backoff
+                    }
+                },
+                // Server-dictated wait plus a margin; never earlier.
+                Fetch::RetryAfter(secs) => secs.max(INTERVAL) + 30,
+                // Expired token / offline / 5xx: keep last data, back off.
+                Fetch::Failed => {
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                    backoff
+                }
+            };
+            save_not_before(now + wait as i64);
         }
     });
 }
