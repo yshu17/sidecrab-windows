@@ -1,41 +1,43 @@
 // Status panel under the crab, modelled on Claude Code's usage readout:
-//   ● activity/model            378k/1M
-//   ctx ▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯      38%
-//   5h  ▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯  15%  4h37m
+//   ● OPUS 5.5 · Editing
+//   CTX ▮▮▮▮▯▯▯▯▯▯▯▯  34k/200k 17%
+//   5H  ▮▮▮▮▮▮▯▯▯▯▯▯  63%  RESET 14:30
 // The DOM is static (index.html) and always visible; values read "--" until
-// real data arrives, and every segment has a fixed width so updates never
+// real data arrives, and every value slot has a fixed width so updates never
 // resize the panel.
 //
-// Hybrid sources:
+// Sources, in priority order (the cache is only a fallback and a fast start —
+// 5h usage also moves with other sessions/devices, so live data always wins):
 //   - status dot + activity: hook events (state.json -> claude-state)
-//   - model + context tokens: the session's sessions.d record, filled by the
-//     statusLine (terminal) or, without one (desktop app), by the hook reading
-//     the transcript (claude-sessions)
-//   - 5-hour limit (limits.json -> claude-limits): OAuth usage API or statusLine
-//     (exact reset time), else the desktop app's own usage samples (percentage
-//     exact, reset time estimated and shown with "~"); "--" when none is current
+//   - model + context: the session record in sessions.d (claude-sessions), fed by
+//     the statusLine (terminal) or by the hook reading the transcript (desktop);
+//     else the cached last-known context, drawn stale
+//   - 5-hour limit (limits.json -> claude-limits): OAuth usage API (rare refresh),
+//     statusLine, or the desktop app's own samples (reset time then estimated,
+//     shown "~"); else the cached value, drawn stale
+// Stale = dimmed value plus a trailing "?".
 
 const WARN_PCT = 50;
 const CRIT_PCT = 80;
 // Working with no hook event for this long = probably stuck (a single tool call
 // such as a long build can legitimately run for minutes, hence generous).
 const STUCK_S = 10 * 60;
+// A 5h reading older than this is drawn stale even without a failed refresh.
+const LIMIT_STALE_S = 45 * 60;
 
 /// 12540 -> "12.5k", 378045 -> "378k", 1000000 -> "1M": at most 5 chars.
 export function compactTokens(n) {
   if (n == null || !isFinite(n)) return "--";
   if (n >= 1e6) return +(n / 1e6).toFixed(1) + "M";
   if (n >= 99_950) return Math.round(n / 1e3) + "k"; // 99950 would round to "100.0k"
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  if (n >= 1e3) return +(n / 1e3).toFixed(1) + "k"; // 34000 -> "34k", not "34.0k"
   return String(Math.round(n));
 }
 
-/// Seconds until reset -> "4h37m" / "12m".
-export function untilText(resetsAtS, nowS = Date.now() / 1000) {
-  const s = Math.max(0, resetsAtS - nowS);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return h > 0 ? `${h}h${String(m).padStart(2, "0")}m` : `${m}m`;
+/// Epoch seconds -> local wall clock "14:30".
+export function clockText(epochS) {
+  const d = new Date(epochS * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 /// Dot colour from Claude's work status only — never from token percentages.
@@ -49,57 +51,79 @@ export function dotStatus(state, nowS = Date.now() / 1000) {
   return "idle";
 }
 
+/// The usage_cache.json document -> the same shapes the live sources produce.
+export function fromCache(cache) {
+  const c = cache || {};
+  return {
+    limits:
+      c.fiveHourUsed != null && c.fiveHourResetTime != null
+        ? {
+            fiveHour: { usedPercentage: c.fiveHourUsed, resetsAt: c.fiveHourResetTime },
+            estimated: !!c.fiveHourEstimated,
+            ts: c.fiveHourUpdated || 0,
+          }
+        : null,
+    context:
+      c.contextUsed != null
+        ? { tokens: c.contextUsed, contextSize: c.contextMax, contextPct: c.contextPercentage, model: c.model }
+        : null,
+  };
+}
+
 const level = (p) => (p >= CRIT_PCT ? "crit" : p >= WARN_PCT ? "warn" : "");
 
 export function attachStatus(el) {
   const $ = (sel) => el.querySelector(sel);
   const dot = $(".dot");
   const what = $(".what");
-  const tok = $(".tok");
   const ctx = $('[data-kind="ctx"]');
   const lim = $('[data-kind="lim"]');
 
   let state = { state: "idle" };
   let sessions = [];
-  let limits = null;
+  let limits = null; // live (limits.json)
+  let cached = { limits: null, context: null };
 
-  const meter = (row, pct) => {
+  const meter = (row, pct, stale) => {
     const known = pct != null && isFinite(pct);
     const p = known ? Math.max(0, Math.min(100, pct)) : 0;
     row.querySelector(".fill").style.width = `${p}%`;
-    row.querySelector(".v").textContent = known ? `${Math.round(pct)}%` : "--%";
+    row.querySelector(".v").textContent = known ? `${Math.round(pct)}%${stale ? "?" : ""}` : "--%";
     row.dataset.level = known ? level(pct) : "";
+    row.dataset.stale = known && stale ? "1" : "";
   };
 
   const render = () => {
     const now = Date.now() / 1000;
-    // Session shown = the one the last hook event came from, else most recent.
+    // Session shown = the one the last hook event came from, else the most recent.
     const own = sessions.find((x) => x.id === state.sessionId);
-    const s = own || sessions[0] || {};
+    const live = own || sessions.find((x) => x.tokens != null) || sessions[0] || null;
     // A state left behind by a session that has since died is not "working".
     const st = state.sessionId && !own ? "idle" : dotStatus(state, now);
     dot.dataset.status = st;
-    what.textContent = st !== "idle" && state.label ? state.label : s.model || "Claude";
 
-    const size = s.contextSize;
-    tok.textContent =
-      s.tokens == null
-        ? "--"
-        : size
-          ? `${compactTokens(s.tokens)}/${compactTokens(size)}`
-          : compactTokens(s.tokens);
-    meter(ctx, s.contextPct ?? (s.tokens != null && size ? (s.tokens / size) * 100 : null));
+    // Context: live session record, else cached last-known (stale).
+    const fromLive = live && live.tokens != null;
+    const c = fromLive ? live : cached.context || {};
+    const model = (live?.model || c.model || "Claude").toUpperCase();
+    const busy = st !== "idle" && state.label ? ` · ${state.label}` : "";
+    what.textContent = model + busy;
 
-    // Claude Code drops a window once it resets; mirror that for stale data.
-    const five = limits?.fiveHour;
-    const live = five && five.resetsAt > now;
-    meter(lim, live ? five.usedPercentage : null);
-    lim.querySelector(".t").textContent = live
-      ? (limits.estimated ? "~" : "") + untilText(five.resetsAt, now)
-      : "--";
+    const size = c.contextSize;
+    const tok = c.tokens == null ? "--" : size ? `${compactTokens(c.tokens)}/${compactTokens(size)}` : compactTokens(c.tokens);
+    ctx.querySelector(".tok").textContent = tok;
+    meter(ctx, c.contextPct ?? (c.tokens != null && size ? (c.tokens / size) * 100 : null), !fromLive);
+
+    // 5h: live limits, else the cache. A window already past its reset is unknown.
+    const src = limits || cached.limits;
+    const five = src?.fiveHour;
+    const valid = five && five.resetsAt > now;
+    const stale = !limits || limits.stale === true || (src.ts && now - src.ts > LIMIT_STALE_S);
+    meter(lim, valid ? five.usedPercentage : null, valid && stale);
+    lim.querySelector(".rt").textContent = valid ? (src.estimated ? "~" : "") + clockText(five.resetsAt) : "--";
   };
   render();
-  setInterval(render, 15_000); // stuck detection, reset countdown, expiry
+  setInterval(render, 15_000); // stuck detection, staleness, window expiry
 
   return {
     setState(s) {
@@ -111,7 +135,11 @@ export function attachStatus(el) {
       render();
     },
     setLimits(l) {
-      limits = l;
+      limits = l && l.fiveHour ? l : null;
+      render();
+    },
+    setCache(cache) {
+      cached = fromCache(cache);
       render();
     },
   };

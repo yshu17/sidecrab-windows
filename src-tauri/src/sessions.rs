@@ -82,6 +82,7 @@ pub fn status_snapshot() -> Value {
     json!({
         "state": if state.is_null() { json!({ "state": "idle" }) } else { state },
         "limits": read_json(&crate::paths::home().join("limits.json")),
+        "cache": crate::usage_cache::load(),
         "sessions": scan(&sessions_dir(), claude_proc::is_alive),
     })
 }
@@ -102,6 +103,11 @@ pub fn spawn(app: AppHandle) {
                 // the webview (its timers/listeners) and every poller thread.
                 app.exit(0);
                 return;
+            }
+            // Newest session with a token count is the active one: remember its
+            // context so the next start can show it before any hook has run.
+            if let Some(active) = live.iter().find(|r| r["tokens"].is_number()) {
+                crate::usage_cache::update_context(active);
             }
             let payload = Value::Array(live);
             if payload != last {

@@ -10,12 +10,18 @@
 
 use serde_json::{json, Value};
 use std::io::Write;
+use std::sync::{Condvar, Mutex};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 const URL: &str = "https://api.anthropic.com/api/oauth/usage";
-const INTERVAL: u64 = 180;
-const MAX_BACKOFF: u64 = 30 * 60;
+/// OAuth usage is fetched at startup, right after the window's reset time, on a
+/// manual refresh, and otherwise only this rarely (5h usage also moves with other
+/// sessions and devices, but the endpoint is rate limited).
+const BACKGROUND: u64 = 30 * 60;
+const MAX_BACKOFF: u64 = 60 * 60;
+/// After the reset time, wait this long before asking for the new window.
+const RESET_GRACE: i64 = 5;
 
 /// Outcome of one request. The endpoint answers 429 with Retry-After, and
 /// asking again early seems to extend the block, so the wait is honoured and
@@ -137,46 +143,95 @@ fn save_not_before(t: i64) {
     let _ = std::fs::write(not_before_path(), json!({ "notBefore": t }).to_string());
 }
 
+static REFRESH: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+/// Manual refresh (menu). Still honours a server-imposed Retry-After.
+pub fn request_refresh() {
+    *REFRESH.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    REFRESH.1.notify_all();
+}
+
+#[tauri::command]
+pub fn refresh_usage() {
+    request_refresh();
+}
+
+/// Sleep up to `secs`, waking early for a manual refresh.
+fn wait(secs: u64) {
+    let g = REFRESH.0.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut g, _) = REFRESH
+        .1
+        .wait_timeout_while(g, Duration::from_secs(secs.max(1)), |flag| !*flag)
+        .unwrap_or_else(|e| e.into_inner());
+    *g = false;
+}
+
+/// The last fetch failed: keep the last limits but flag them stale so the UI
+/// says so. A later successful write (any source) clears the flag.
+fn mark_stale(path: &std::path::Path) {
+    let Some(mut l) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .filter(|l| l["stale"] != true && l.is_object())
+    else {
+        return;
+    };
+    l["stale"] = json!(true);
+    write_limits(path, &l);
+}
+
+fn write_limits(path: &std::path::Path, l: &Value) {
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or(path));
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, l.to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, path); // watcher emits claude-limits
+    }
+}
+
 pub fn spawn() {
     std::thread::spawn(|| {
         let path = crate::paths::home().join("limits.json");
-        let mut backoff = INTERVAL;
+        let mut backoff = BACKGROUND / 6; // 5 min, doubling per consecutive failure
         loop {
             let now = now_ms() / 1000;
             let not_before = load_not_before();
             if now < not_before {
-                std::thread::sleep(Duration::from_secs((not_before - now) as u64));
+                wait((not_before - now) as u64);
                 continue;
             }
             let result = match access_token() {
                 Some(t) => fetch(&t),
                 None => Fetch::Failed,
             };
-            let wait = match result {
+            let next = match result {
                 Fetch::Ok(r) => match to_limits(&r, now) {
                     Some(l) => {
-                        let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
-                        let tmp = path.with_extension("json.tmp");
-                        if std::fs::write(&tmp, l.to_string()).is_ok() {
-                            let _ = std::fs::rename(&tmp, &path); // watcher emits claude-limits
-                        }
-                        backoff = INTERVAL;
-                        INTERVAL
+                        write_limits(&path, &l);
+                        backoff = BACKGROUND / 6;
+                        // Next: just after this window resets, else the rare background refresh.
+                        let until_reset = l["fiveHour"]["resetsAt"].as_i64().unwrap_or(0) - now + RESET_GRACE;
+                        if until_reset > 0 { (until_reset as u64).min(BACKGROUND) } else { BACKGROUND }
                     }
                     None => {
-                        backoff = (backoff * 2).min(MAX_BACKOFF); // shape changed
+                        mark_stale(&path); // shape changed
+                        backoff = (backoff * 2).min(MAX_BACKOFF);
                         backoff
                     }
                 },
-                // Server-dictated wait plus a margin; never earlier.
-                Fetch::RetryAfter(secs) => secs.max(INTERVAL) + 30,
-                // Expired token / offline / 5xx: keep last data, back off.
+                // Server-dictated wait, never earlier.
+                Fetch::RetryAfter(secs) => {
+                    mark_stale(&path);
+                    secs + 30
+                }
+                // Expired token / offline / 5xx.
                 Fetch::Failed => {
+                    mark_stale(&path);
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                     backoff
                 }
             };
-            save_not_before(now + wait as i64);
+            save_not_before(now + next as i64);
+            wait(next);
         }
     });
 }
@@ -230,8 +285,9 @@ pub fn from_history(history: &Value, now_s: i64) -> Option<Value> {
     }))
 }
 
-/// Keep limits.json fed from the desktop history unless a more precise source
-/// (OAuth, statusLine) wrote it within the last 10 minutes.
+/// Keep limits.json fed from the desktop history. Within a window whose reset
+/// time a precise source (OAuth, statusLine) already gave, only the percentage
+/// is refreshed (when the sample is newer); otherwise the estimate is written.
 pub fn spawn_desktop_history() {
     std::thread::spawn(|| loop {
         let now = now_ms() / 1000;
@@ -240,22 +296,27 @@ pub fn spawn_desktop_history() {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(Value::Null);
-        let precise_fresh = existing["source"].as_str() != Some("desktop")
-            && !existing.is_null()
-            && now - existing["ts"].as_i64().unwrap_or(0) < 600;
-        if !precise_fresh {
-            let history = dirs::config_dir()
-                .map(|d| d.join("Claude").join("plan-usage-history.json"))
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .and_then(|s| serde_json::from_str::<Value>(&s).ok());
-            if let Some(l) = history.and_then(|h| from_history(&h, now)) {
-                if l["fiveHour"] != existing["fiveHour"] {
-                    let _ = std::fs::create_dir_all(limits.parent().unwrap_or(&limits));
-                    let tmp = limits.with_extension("json.tmp");
-                    if std::fs::write(&tmp, l.to_string()).is_ok() {
-                        let _ = std::fs::rename(&tmp, &limits);
+        let history = dirs::config_dir()
+            .map(|d| d.join("Claude").join("plan-usage-history.json"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+        if let Some(l) = history.and_then(|h| from_history(&h, now)) {
+            let precise_window = !existing.is_null()
+                && existing["source"].as_str() != Some("desktop")
+                && existing["estimated"] != true
+                && existing["fiveHour"]["resetsAt"].as_i64().unwrap_or(0) > now;
+            if precise_window {
+                if l["ts"].as_i64() > existing["ts"].as_i64() {
+                    let mut m = existing.clone();
+                    m["fiveHour"]["usedPercentage"] = l["fiveHour"]["usedPercentage"].clone();
+                    m["ts"] = l["ts"].clone();
+                    m.as_object_mut().map(|o| o.remove("stale")); // fresh percentage
+                    if m["fiveHour"] != existing["fiveHour"] {
+                        write_limits(&limits, &m);
                     }
                 }
+            } else if l["fiveHour"] != existing["fiveHour"] || existing["stale"] == true {
+                write_limits(&limits, &l);
             }
         }
         std::thread::sleep(Duration::from_secs(30));

@@ -33,6 +33,7 @@ pub fn spawn(app: AppHandle) {
         // Initial emit so the crab reflects reality on launch.
         let _ = app.emit("claude-state", current_state(&state_path));
         if let Some(l) = read_limits() {
+            crate::usage_cache::update_five_hour(&l);
             let _ = app.emit("claude-limits", l);
         }
 
@@ -65,6 +66,7 @@ pub fn spawn(app: AppHandle) {
             }
             if limits {
                 if let Some(l) = read_limits() {
+                    crate::usage_cache::update_five_hour(&l);
                     let _ = app.emit("claude-limits", l);
                 }
             }

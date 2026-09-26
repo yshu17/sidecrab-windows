@@ -36,6 +36,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     // picture once they're attached so the bar is filled from the first frame.
     invoke("status_snapshot").then((snap) => {
       if (!snap) return;
+      status.setCache(snap.cache); // last-known values: shown instantly, drawn stale
       status.setLimits(snap.limits);
       status.setSessions(snap.sessions);
       status.setState(snap.state);

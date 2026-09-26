@@ -7,6 +7,7 @@ pub mod paths;
 pub mod sessions;
 pub mod state_watcher;
 pub mod usage_api;
+pub mod usage_cache;
 
 use std::sync::Mutex;
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -181,6 +182,7 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
     }
     menu
         .items(&[
+            &MenuItemBuilder::with_id("usage-refresh", "Refresh usage").build(app).ok()?,
             &MenuItemBuilder::with_id("update-check", "Check for Updates…").build(app).ok()?,
             &MenuItemBuilder::with_id("quit", "Quit Sidecrab")
                 .accelerator("CmdOrCtrl+Q")
@@ -267,6 +269,7 @@ fn on_menu(app: &AppHandle, id: &str) {
         "hooks-remove" => {
             let _ = os_actions::hooks_remove();
         }
+        "usage-refresh" => usage_api::request_refresh(),
         "update-check" => check_for_updates(app.clone()),
         "quit" => app.exit(0),
         _ => {}
@@ -378,6 +381,7 @@ pub fn run() {
             os_actions::hooks_status,
             idle_monitor::user_is_idle,
             sessions::status_snapshot,
+            usage_api::refresh_usage,
         ])
         .setup(|app| {
             let win = app.get_webview_window("main").expect("main window");

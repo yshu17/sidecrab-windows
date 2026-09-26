@@ -69,7 +69,7 @@ body {
 #status .dot[data-status="attention"] { background: #ffc857; }
 #status .dot[data-status="error"] { background: #ff4f4f; }
 #status .what { flex: 1 1 auto !important; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-#status .tok { min-width: 7ch; text-align: right; color: #b9b6bf; } /* grows; .what absorbs it */
+#status .tok { min-width: 7ch; text-align: right; color: #b9b6bf; }
 #status .k { width: 3ch; color: #9a97a3; }
 /* pixel meter: segmented fill on a dark track */
 #status .bar {
@@ -90,6 +90,11 @@ body {
 #status .row[data-level="warn"] .v { color: #ffc857; }
 #status .row[data-level="crit"] .v { color: #ff6b6b; }
 #status .v { width: 4ch; text-align: right; }
-#status .t { width: 6ch; text-align: right; color: #9a97a3; }
-/* Narrow (S): drop the reset countdown rather than squeeze the meters. */
-@container (max-width: 139px) { #status .t { display: none; } }
+#status .t { min-width: 6ch; text-align: right; color: #9a97a3; }
+#status .what { text-transform: uppercase; }
+/* stale = last-known value, not confirmed by a live source */
+#status .row[data-stale="1"] .v, #status .row[data-stale="1"] .tok, #status .row[data-stale="1"] .t { opacity: 0.6; }
+#status .row[data-stale="1"] .fill { opacity: 0.45; }
+/* Narrower windows drop the least important text instead of squeezing the meters. */
+@container (max-width: 199px) { #status .rl { display: none; } }
+@container (max-width: 139px) { #status .tok { display: none; } #status .t { display: none; } }
