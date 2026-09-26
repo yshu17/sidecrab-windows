@@ -180,3 +180,84 @@ pub fn spawn() {
         }
     });
 }
+
+// ---------------------------------------------------------------------------
+// Local source: the Claude desktop app samples the plan usage itself every ~15
+// minutes into %APPDATA%\Claude\plan-usage-history.json ({t: ms, u: {fh, sd}},
+// percentages). It has no reset time, so that is estimated from the window's
+// first sample. This needs no network and no token, so it keeps working while
+// the OAuth endpoint is rate limited.
+
+const WINDOW_S: i64 = 5 * 3600;
+/// Newer than this counts as current (the app samples every ~15 min).
+const STALE_S: i64 = 45 * 60;
+
+/// Build limits.json content from the desktop app's sample history.
+pub fn from_history(history: &Value, now_s: i64) -> Option<Value> {
+    let samples = history["samples"].as_array()?;
+    let last = samples.last()?;
+    let t_last = last["t"].as_i64()? / 1000;
+    let pct = last["u"]["fh"].as_f64()?;
+    if now_s - t_last > STALE_S {
+        return None;
+    }
+    let at = |i: usize| samples[i]["t"].as_i64().map(|t| t / 1000);
+    let fh = |i: usize| samples[i]["u"]["fh"].as_f64();
+
+    // Walk back through the current window: it ends at the previous reset
+    // (usage dropped), an all-zero sample, or a gap longer than a window.
+    let mut first = samples.len() - 1;
+    while first > 0 {
+        let (prev_pct, prev_t) = (fh(first - 1)?, at(first - 1)?);
+        if prev_pct == 0.0 || prev_pct > fh(first)? || at(first)? - prev_t > WINDOW_S {
+            break;
+        }
+        first -= 1;
+    }
+    // The window opened somewhere between the last quiet sample and the first
+    // one showing usage; take the midpoint.
+    let start = if first > 0 && fh(first)? > 0.0 {
+        (at(first - 1)? + at(first)?) / 2
+    } else {
+        at(first)?
+    };
+    let resets = if pct > 0.0 { start + WINDOW_S } else { now_s + WINDOW_S };
+    Some(json!({
+        "fiveHour": { "usedPercentage": pct, "resetsAt": resets },
+        "estimated": true,
+        "source": "desktop",
+        "ts": t_last,
+    }))
+}
+
+/// Keep limits.json fed from the desktop history unless a more precise source
+/// (OAuth, statusLine) wrote it within the last 10 minutes.
+pub fn spawn_desktop_history() {
+    std::thread::spawn(|| loop {
+        let now = now_ms() / 1000;
+        let limits = crate::paths::home().join("limits.json");
+        let existing: Value = std::fs::read_to_string(&limits)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(Value::Null);
+        let precise_fresh = existing["source"].as_str() != Some("desktop")
+            && !existing.is_null()
+            && now - existing["ts"].as_i64().unwrap_or(0) < 600;
+        if !precise_fresh {
+            let history = dirs::config_dir()
+                .map(|d| d.join("Claude").join("plan-usage-history.json"))
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+            if let Some(l) = history.and_then(|h| from_history(&h, now)) {
+                if l["fiveHour"] != existing["fiveHour"] {
+                    let _ = std::fs::create_dir_all(limits.parent().unwrap_or(&limits));
+                    let tmp = limits.with_extension("json.tmp");
+                    if std::fs::write(&tmp, l.to_string()).is_ok() {
+                        let _ = std::fs::rename(&tmp, &limits);
+                    }
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_secs(30));
+    });
+}

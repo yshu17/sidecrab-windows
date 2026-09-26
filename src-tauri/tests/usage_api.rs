@@ -32,3 +32,44 @@ fn unknown_shape_rejected() {
     assert!(to_limits(&json!({"error": {"type": "rate_limit_error"}}), 0).is_none());
     assert!(to_limits(&json!({"five_hour": null}), 0).is_none());
 }
+
+// --- desktop app history (no network, no token) ---
+use sidecrab_lib::usage_api::from_history;
+
+fn hist(samples: &[(i64, f64)]) -> serde_json::Value {
+    json!({"version": 2, "samples": samples.iter()
+        .map(|(t, fh)| json!({"t": t * 1000, "u": {"fh": fh, "sd": 50}})).collect::<Vec<_>>()})
+}
+
+#[test]
+fn history_percent_and_estimated_reset() {
+    // quiet at 1000, first usage seen at 2800 -> window opened ~1900 -> resets 1900+5h
+    let h = hist(&[(100, 40.0), (200, 0.0), (1000, 0.0), (2800, 3.0), (3700, 15.0), (4600, 26.0)]);
+    let l = from_history(&h, 4700).unwrap();
+    assert_eq!(l["fiveHour"]["usedPercentage"], 26.0);
+    assert_eq!(l["fiveHour"]["resetsAt"], 1900 + 5 * 3600);
+    assert_eq!(l["estimated"], true);
+    assert_eq!(l["source"], "desktop");
+}
+
+#[test]
+fn history_window_break_on_usage_drop() {
+    // 90 -> 4 is a reset: the window starts between those two samples
+    let h = hist(&[(0, 80.0), (900, 90.0), (1800, 4.0), (2700, 10.0)]);
+    let l = from_history(&h, 2800).unwrap();
+    assert_eq!(l["fiveHour"]["resetsAt"], (900 + 1800) / 2 + 5 * 3600);
+}
+
+#[test]
+fn history_zero_usage_has_no_window_yet() {
+    let l = from_history(&hist(&[(0, 5.0), (900, 0.0)]), 1000).unwrap();
+    assert_eq!(l["fiveHour"]["usedPercentage"], 0.0);
+    assert_eq!(l["fiveHour"]["resetsAt"], 1000 + 5 * 3600);
+}
+
+#[test]
+fn history_stale_or_empty_rejected() {
+    assert!(from_history(&hist(&[(0, 10.0)]), 3 * 3600).is_none());
+    assert!(from_history(&json!({"samples": []}), 0).is_none());
+    assert!(from_history(&json!({"nope": 1}), 0).is_none());
+}

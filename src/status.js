@@ -11,8 +11,9 @@
 //   - model + context tokens: the session's sessions.d record, filled by the
 //     statusLine (terminal) or, without one (desktop app), by the hook reading
 //     the transcript (claude-sessions)
-//   - 5-hour limit: OAuth usage API poller or statusLine (limits.json ->
-//     claude-limits); "--" when neither has current data
+//   - 5-hour limit (limits.json -> claude-limits): OAuth usage API or statusLine
+//     (exact reset time), else the desktop app's own usage samples (percentage
+//     exact, reset time estimated and shown with "~"); "--" when none is current
 
 const WARN_PCT = 50;
 const CRIT_PCT = 80;
@@ -93,7 +94,9 @@ export function attachStatus(el) {
     const five = limits?.fiveHour;
     const live = five && five.resetsAt > now;
     meter(lim, live ? five.usedPercentage : null);
-    lim.querySelector(".t").textContent = live ? untilText(five.resetsAt, now) : "--";
+    lim.querySelector(".t").textContent = live
+      ? (limits.estimated ? "~" : "") + untilText(five.resetsAt, now)
+      : "--";
   };
   render();
   setInterval(render, 15_000); // stuck detection, reset countdown, expiry

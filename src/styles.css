@@ -90,6 +90,6 @@ body {
 #status .row[data-level="warn"] .v { color: #ffc857; }
 #status .row[data-level="crit"] .v { color: #ff6b6b; }
 #status .v { width: 4ch; text-align: right; }
-#status .t { width: 5ch; text-align: right; color: #9a97a3; }
+#status .t { width: 6ch; text-align: right; color: #9a97a3; }
 /* Narrow (S): drop the reset countdown rather than squeeze the meters. */
 @container (max-width: 139px) { #status .t { display: none; } }

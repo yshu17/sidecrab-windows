@@ -403,6 +403,7 @@ pub fn run() {
             state_watcher::spawn(app.handle().clone());
             sessions::spawn(app.handle().clone());
             usage_api::spawn();
+            usage_api::spawn_desktop_history();
             spawn_click_through_poller(app.handle().clone());
             idle_monitor::spawn(app.handle().clone());
             // Pre-rename hook entries point at a binary that no longer exists —
