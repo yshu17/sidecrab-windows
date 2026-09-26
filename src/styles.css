@@ -80,7 +80,7 @@ body {
   overflow: hidden;
   transition: opacity 100ms linear 90ms; /* text fades in once the frame is half out */
 }
-/* Mini plate (compact mode, collapsed): dot + short model + activity pixels,
+/* Mini plate (compact mode, collapsed): dot + short model + 5h reset time,
    centred at the top of the strip, right under the crab's feet. Centred by
    layout rather than a -50% transform so its edges stay on whole pixels. */
 #status .mini-wrap {
@@ -110,16 +110,6 @@ body {
 }
 #status[data-mini="1"] .row { opacity: 0; transition: opacity 50ms linear; }
 #status[data-mini="1"] .mini { opacity: 1; transition: opacity 60ms linear 150ms; }
-/* activity: three pixels; they tick while working, blink when Claude needs you */
-#status .act { display: flex; gap: 1px; }
-#status .act i { width: 2px; height: 2px; background: #55525c; }
-#status[data-dot="working"] .act i { background: #4ade5a; animation: act-tick 900ms steps(1, end) infinite; }
-#status[data-dot="working"] .act i:nth-child(2) { animation-delay: 300ms; }
-#status[data-dot="working"] .act i:nth-child(3) { animation-delay: 600ms; }
-#status[data-dot="attention"] .act i { background: #ffc857; animation: act-blink 800ms steps(1, end) infinite; }
-#status[data-dot="error"] .act i { background: #ff4f4f; }
-@keyframes act-tick { 0% { opacity: 1; } 33% { opacity: 0.25; } }
-@keyframes act-blink { 0% { opacity: 1; } 50% { opacity: 0.2; } }
 #status .row > span { flex: 0 0 auto; }
 /* pixel-art circle: 7x7 stepped outline */
 #status .dot {
@@ -155,11 +145,13 @@ body {
 #status .row[data-level="warn"] .v { color: #ffc857; }
 #status .row[data-level="crit"] .v { color: #ff6b6b; }
 #status .v { width: 4ch; text-align: right; }
-#status .t { min-width: 6ch; text-align: right; color: #9a97a3; }
+#status .t { min-width: 7ch; } /* empty: keeps the 5H bar the same length as the CTX bar */
+#status .rs, #status .mt { min-width: 5ch; text-align: right; color: #b9b6bf; }
+#status .mt { margin-left: 2px; }
+#status .rs[data-stale="1"], #status .mt[data-stale="1"] { opacity: 0.6; }
 #status .what { text-transform: uppercase; }
 /* stale = last-known value, not confirmed by a live source */
-#status .row[data-stale="1"] .v, #status .row[data-stale="1"] .tok, #status .row[data-stale="1"] .t { opacity: 0.6; }
+#status .row[data-stale="1"] .v, #status .row[data-stale="1"] .tok { opacity: 0.6; }
 #status .row[data-stale="1"] .fill { opacity: 0.45; }
 /* Narrower windows drop the least important text instead of squeezing the meters. */
-@container (max-width: 199px) { #status .rl { display: none; } }
 @container (max-width: 139px) { #status .tok { display: none; } #status .t { display: none; } }

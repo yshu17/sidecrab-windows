@@ -1,7 +1,7 @@
 // Status panel under the crab, modelled on Claude Code's usage readout:
-//   ● OPUS 5.5 · Editing
+//   ● OPUS            14:30   (short model name, local 5h reset time)
 //   CTX ▮▮▮▮▯▯▯▯▯▯▯▯  34k/200k 17%
-//   5H  ▮▮▮▮▮▮▯▯▯▯▯▯  63%  RESET 14:30
+//   5H  ▮▮▮▮▮▮▯▯▯▯▯▯          63%
 // The DOM is static (index.html) and always visible; values read "--" until
 // real data arrives, and every value slot has a fixed width so updates never
 // resize the panel.
@@ -17,7 +17,7 @@
 //     shown "~"); else the cached value, drawn stale
 // Stale = dimmed value plus a trailing "?".
 // Compact mode (the default): the panel collapses into a mini plate — dot, short
-// model name, activity pixels — and grows back out of it from the centre while
+// model name, 5h reset time — and grows back out of it from the centre while
 // the cursor is over the strip (see setCompact/setHover).
 
 const WARN_PCT = 50;
@@ -40,6 +40,15 @@ export function compactTokens(n) {
   if (n >= 99_950) return Math.round(n / 1e3) + "k"; // 99950 would round to "100.0k"
   if (n >= 1e3) return +(n / 1e3).toFixed(1) + "k"; // 34000 -> "34k", not "34.0k"
   return String(Math.round(n));
+}
+
+/// "Opus 5.5" / "Sonnet 5" / "claude-haiku-4-5" -> "OPUS" / "SONNET" / "HAIKU".
+/// Known families win wherever they appear; otherwise the first word that is not
+/// "claude" and has no digits ("Gemini 2" -> "GEMINI").
+export function shortModel(name) {
+  const words = String(name || "").toLowerCase().match(/[a-z]+/g) || [];
+  const family = words.find((w) => ["opus", "sonnet", "haiku"].includes(w));
+  return (family || words.find((w) => w !== "claude") || "claude").toUpperCase();
 }
 
 /// Epoch seconds -> local wall clock "14:30".
@@ -84,6 +93,8 @@ export function attachStatus(el) {
   const $ = (sel) => el.querySelector(sel);
   const dot = $(".row .dot");
   const what = $(".what");
+  const resetRow = $(".rs");
+  const miniTime = $(".mini .mt");
   const mini = $(".mini");
   const miniDot = $(".mini .dot");
   const miniModel = $(".mini .m");
@@ -123,19 +134,14 @@ export function attachStatus(el) {
     const st = state.sessionId && !own ? "idle" : dotStatus(state, now);
     dot.dataset.status = st;
     miniDot.dataset.status = st;
-    el.dataset.dot = st; // drives the mini plate's activity pixels
+    el.dataset.dot = st; // state colour of the plate's dot
 
     // Context: live session record, else cached last-known (stale).
     const fromLive = live && live.tokens != null;
     const c = fromLive ? live : cached.context || {};
     const model = (live?.model || c.model || "Claude").toUpperCase();
-    const busy = st !== "idle" && state.label ? ` · ${state.label}` : "";
-    what.textContent = model + busy;
-    const short = model.split(/\s+/)[0]; // "SONNET 5" -> "SONNET"
-    if (miniModel.textContent !== short) {
-      miniModel.textContent = short;
-      fitFrame();
-    }
+    const short = shortModel(model);
+    what.textContent = short;
 
     const size = c.contextSize;
     const tok = c.tokens == null ? "--" : size ? `${compactTokens(c.tokens)}/${compactTokens(size)}` : compactTokens(c.tokens);
@@ -148,7 +154,18 @@ export function attachStatus(el) {
     const valid = five && five.resetsAt > now;
     const stale = !limits || limits.stale === true || (src.ts && now - src.ts > LIMIT_STALE_S);
     meter(lim, valid ? five.usedPercentage : null, valid && stale);
-    lim.querySelector(".rt").textContent = valid ? (src.estimated ? "~" : "") + clockText(five.resetsAt) : "--";
+    // Reset time comes straight from the source's resetsAt (never computed here);
+    // "~" marks the desktop-sample estimate, "--:--" = no live window.
+    const reset = valid ? (src.estimated ? "~" : "") + clockText(five.resetsAt) : "--:--";
+    resetRow.textContent = reset;
+    resetRow.dataset.stale = valid && stale ? "1" : "";
+    // The plate is as wide as its content: refit the collapsed frame when it changed.
+    if (miniModel.textContent !== short || miniTime.textContent !== reset) {
+      miniModel.textContent = short;
+      miniTime.textContent = reset;
+      miniTime.dataset.stale = resetRow.dataset.stale;
+      fitFrame();
+    }
   };
   render();
   fitFrame();
