@@ -25,10 +25,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     invoke("get_config").then((c) => {
       if (!c) return;
       renderer.setHat(c.hat);
-      status.setAutoHide(c.autoHideStatus);
+      status.setCompact(c.compactStatus);
     });
     await listen("hat-changed", (e) => renderer.setHat(e.payload));
-    await listen("status-autohide-changed", (e) => status.setAutoHide(e.payload));
+    await listen("status-compact-changed", (e) => status.setCompact(e.payload));
     await listen("status-hover", (e) => status.setHover(e.payload));
     await listen("claude-limits", (e) => status.setLimits(e.payload));
     await listen("claude-sessions", (e) => status.setSessions(e.payload));

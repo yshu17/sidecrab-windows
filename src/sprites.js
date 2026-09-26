@@ -9,6 +9,12 @@ import { FRAME_W, FRAME_H, WALK_PNGS } from "./frames.js";
 export const CANVAS_W = FRAME_W;
 export const CANVAS_H = 48;
 const CRAB_Y = CANVAS_H - FRAME_H; // crab sits at the bottom
+// The laptop frames (24-26) draw the crab at the right of the frame with the
+// laptop on its left (head centre x=34 vs 25 when standing). Shift them so the
+// crab's body stays at the window centre in every pose: he no longer hops
+// sideways when he sits down to work, and the status bar under him (centred on
+// the window) stays centred on him.
+const FRAME_DX = { 24: -9, 25: -9, 26: -9 };
 
 // Animation definitions. Frames 0-3 of the cycle are the neutral stand; the rest
 // walk with the sideways wobble.
@@ -361,6 +367,8 @@ export class SpriteRenderer {
       ctx.scale(-1, 1);
     }
     const y = CRAB_Y + (s.dy || 0);
+    // Inside the flip, so a mirrored frame is shifted the mirrored way.
+    ctx.translate(FRAME_DX[s.i] || 0, 0);
     ctx.drawImage(img, 0, y);
     // Ambient blink: every few seconds on ANY animation (skipped when the step
     // already manipulates the eyes) — keeps him alive while working/thinking.
@@ -446,7 +454,8 @@ export class SpriteRenderer {
     const a = this._headAnchor(i);
     if (!a) return;
     const ctx = this.ctx;
-    const cx = Math.round(this.facing === -1 ? CANVAS_W - a.cx : a.cx);
+    const hx = a.cx + (FRAME_DX[i] || 0);
+    const cx = Math.round(this.facing === -1 ? CANVAS_W - hx : hx);
     const top = y + a.top;
     ctx.fillStyle = BUBBLE;
     ctx.fillRect(cx + 2, top - 3, 1, 1);     // tiny trailing dot

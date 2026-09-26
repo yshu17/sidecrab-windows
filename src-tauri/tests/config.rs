@@ -20,30 +20,37 @@ fn round_trips() {
         consent_asked: true,
         plugin_managed: true,
         hat: "fedora".into(),
-        auto_hide_status: false,
+        compact_status: false,
     };
     save_to(&path, &c).unwrap();
     assert_eq!(load_from(&path), c);
 }
 
 #[test]
-fn auto_hide_defaults_on_and_survives_old_configs() {
-    assert!(Config::default().auto_hide_status);
+fn compact_defaults_on_and_survives_old_configs() {
+    assert!(Config::default().compact_status);
     // A config.json written before the setting existed has no such key.
     let path = tmp("old");
     std::fs::write(&path, r#"{"size":"S","hat":"chef"}"#).unwrap();
     let c = load_from(&path);
     assert_eq!(c.size, "S");
-    assert!(c.auto_hide_status);
+    assert!(c.compact_status);
+    // The previous "auto-hide" toggle carries over...
+    std::fs::write(&path, r#"{"autoHideStatus":false}"#).unwrap();
+    assert!(!load_from(&path).compact_status);
+    // ...and is saved under the new name only.
+    save_to(&path, &load_from(&path)).unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(raw.contains("compactStatus") && !raw.contains("autoHideStatus"));
 }
 
 #[test]
 fn utf8_bom_is_tolerated() {
     let path = tmp("bom");
-    std::fs::write(&path, "\u{feff}{\"size\":\"L\",\"autoHideStatus\":false}").unwrap();
+    std::fs::write(&path, "\u{feff}{\"size\":\"L\",\"compactStatus\":false}").unwrap();
     let c = load_from(&path);
     assert_eq!(c.size, "L");
-    assert!(!c.auto_hide_status);
+    assert!(!c.compact_status);
 }
 
 #[test]

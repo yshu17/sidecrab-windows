@@ -16,8 +16,9 @@
 //     statusLine, or the desktop app's own samples (reset time then estimated,
 //     shown "~"); else the cached value, drawn stale
 // Stale = dimmed value plus a trailing "?".
-// With auto-hide on the panel slides down to a thin state-coloured handle and
-// comes back while the cursor is over it (see setAutoHide/setHover).
+// Compact mode (the default): the panel collapses into a mini plate — dot, short
+// model name, activity pixels — and grows back out of it from the centre while
+// the cursor is over the strip (see setCompact/setHover).
 
 const WARN_PCT = 50;
 const CRIT_PCT = 80;
@@ -26,9 +27,11 @@ const CRIT_PCT = 80;
 const STUCK_S = 10 * 60;
 // A 5h reading older than this is drawn stale even without a failed refresh.
 const LIMIT_STALE_S = 45 * 60;
-// Auto-hide timing: linger after the cursor leaves; peek on start / enable.
-const HIDE_DELAY_MS = 350;
-const PEEK_MS = 3000;
+// Compact mode timing: linger after the cursor leaves; show the full panel for
+// a moment at startup, and collapse shortly after the setting is switched on.
+const COLLAPSE_DELAY_MS = 400;
+const STARTUP_PEEK_MS = 3000;
+const ENABLE_PEEK_MS = 500;
 
 /// 12540 -> "12.5k", 378045 -> "378k", 1000000 -> "1M": at most 5 chars.
 export function compactTokens(n) {
@@ -79,8 +82,11 @@ const level = (p) => (p >= CRIT_PCT ? "crit" : p >= WARN_PCT ? "warn" : "");
 
 export function attachStatus(el) {
   const $ = (sel) => el.querySelector(sel);
-  const dot = $(".dot");
+  const dot = $(".row .dot");
   const what = $(".what");
+  const mini = $(".mini");
+  const miniDot = $(".mini .dot");
+  const miniModel = $(".mini .m");
   const ctx = $('[data-kind="ctx"]');
   const lim = $('[data-kind="lim"]');
 
@@ -88,6 +94,16 @@ export function attachStatus(el) {
   let sessions = [];
   let limits = null; // live (limits.json)
   let cached = { limits: null, context: null };
+
+  // The frame collapses into (and grows out of) the mini plate: scale it to the
+  // plate's size. offsetWidth is layout size, unaffected by the transforms.
+  const fitFrame = () => {
+    const w = el.offsetWidth, h = el.offsetHeight;
+    if (!w || !h) return;
+    el.style.setProperty("--kx", (mini.offsetWidth / w).toFixed(3));
+    el.style.setProperty("--ky", (mini.offsetHeight / h).toFixed(3));
+  };
+  window.addEventListener("resize", fitFrame); // Size S/M/L
 
   const meter = (row, pct, stale) => {
     const known = pct != null && isFinite(pct);
@@ -106,7 +122,8 @@ export function attachStatus(el) {
     // A state left behind by a session that has since died is not "working".
     const st = state.sessionId && !own ? "idle" : dotStatus(state, now);
     dot.dataset.status = st;
-    el.dataset.dot = st; // tints the handle while the bar is auto-hidden
+    miniDot.dataset.status = st;
+    el.dataset.dot = st; // drives the mini plate's activity pixels
 
     // Context: live session record, else cached last-known (stale).
     const fromLive = live && live.tokens != null;
@@ -114,6 +131,11 @@ export function attachStatus(el) {
     const model = (live?.model || c.model || "Claude").toUpperCase();
     const busy = st !== "idle" && state.label ? ` · ${state.label}` : "";
     what.textContent = model + busy;
+    const short = model.split(/\s+/)[0]; // "SONNET 5" -> "SONNET"
+    if (miniModel.textContent !== short) {
+      miniModel.textContent = short;
+      fitFrame();
+    }
 
     const size = c.contextSize;
     const tok = c.tokens == null ? "--" : size ? `${compactTokens(c.tokens)}/${compactTokens(size)}` : compactTokens(c.tokens);
@@ -129,36 +151,37 @@ export function attachStatus(el) {
     lim.querySelector(".rt").textContent = valid ? (src.estimated ? "~" : "") + clockText(five.resetsAt) : "--";
   };
   render();
+  fitFrame();
   setInterval(render, 15_000); // stuck detection, staleness, window expiry
 
-  // Auto-hide. The bar is shown while the cursor is over its strip, hides a beat
-  // after the cursor leaves (so a brief slip off the edge doesn't flicker it), and
-  // peeks for a few seconds when auto-hide is (re)enabled or the app starts.
-  let autoHide = false;
+  // Compact mode. Expanded while the cursor is over the strip; collapses a beat
+  // after it leaves (a brief slip off the edge doesn't flicker it).
+  let compact = false;
   let hover = false;
-  let hideTimer = null;
-  const setHidden = (hidden) => {
-    el.dataset.hidden = hidden ? "1" : "";
+  let collapseTimer = null;
+  const setMini = (on) => {
+    el.dataset.mini = on ? "1" : "";
   };
-  const hideSoon = (ms) => {
-    clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => setHidden(true), ms);
+  const collapseSoon = (ms) => {
+    clearTimeout(collapseTimer);
+    collapseTimer = setTimeout(() => setMini(true), ms);
   };
+  let started = false;
 
   return {
-    setAutoHide(on) {
-      autoHide = !!on;
-      clearTimeout(hideTimer);
-      if (!autoHide) return setHidden(false);
-      setHidden(false);
-      if (!hover) hideSoon(PEEK_MS);
+    setCompact(on) {
+      compact = !!on;
+      clearTimeout(collapseTimer);
+      setMini(false);
+      if (compact && !hover) collapseSoon(started ? ENABLE_PEEK_MS : STARTUP_PEEK_MS);
+      started = true;
     },
     setHover(on) {
       hover = !!on;
-      if (!autoHide) return;
-      clearTimeout(hideTimer);
-      if (hover) setHidden(false);
-      else hideSoon(HIDE_DELAY_MS);
+      if (!compact) return;
+      clearTimeout(collapseTimer);
+      if (hover) setMini(false);
+      else collapseSoon(COLLAPSE_DELAY_MS);
     },
     setState(s) {
       state = s || { state: "idle" };

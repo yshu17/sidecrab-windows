@@ -18,8 +18,10 @@ pub struct Config {
     pub plugin_managed: bool,
     /// Cosmetic hat: "none" | "top" | "chef" | "fedora" | "heli".
     pub hat: String,
-    /// Status bar slides away unless the cursor is over its strip.
-    pub auto_hide_status: bool,
+    /// Status bar collapses to a mini plate and expands while the cursor is over
+    /// its strip. Read from the older `autoHideStatus` key too.
+    #[serde(alias = "autoHideStatus")]
+    pub compact_status: bool,
 }
 
 impl Default for Config {
@@ -32,7 +34,7 @@ impl Default for Config {
             consent_asked: false,
             plugin_managed: false,
             hat: "none".into(),
-            auto_hide_status: true,
+            compact_status: true,
         }
     }
 }
