@@ -16,6 +16,8 @@
 //     statusLine, or the desktop app's own samples (reset time then estimated,
 //     shown "~"); else the cached value, drawn stale
 // Stale = dimmed value plus a trailing "?".
+// With auto-hide on the panel slides down to a thin state-coloured handle and
+// comes back while the cursor is over it (see setAutoHide/setHover).
 
 const WARN_PCT = 50;
 const CRIT_PCT = 80;
@@ -24,6 +26,9 @@ const CRIT_PCT = 80;
 const STUCK_S = 10 * 60;
 // A 5h reading older than this is drawn stale even without a failed refresh.
 const LIMIT_STALE_S = 45 * 60;
+// Auto-hide timing: linger after the cursor leaves; peek on start / enable.
+const HIDE_DELAY_MS = 350;
+const PEEK_MS = 3000;
 
 /// 12540 -> "12.5k", 378045 -> "378k", 1000000 -> "1M": at most 5 chars.
 export function compactTokens(n) {
@@ -101,6 +106,7 @@ export function attachStatus(el) {
     // A state left behind by a session that has since died is not "working".
     const st = state.sessionId && !own ? "idle" : dotStatus(state, now);
     dot.dataset.status = st;
+    el.dataset.dot = st; // tints the handle while the bar is auto-hidden
 
     // Context: live session record, else cached last-known (stale).
     const fromLive = live && live.tokens != null;
@@ -125,7 +131,35 @@ export function attachStatus(el) {
   render();
   setInterval(render, 15_000); // stuck detection, staleness, window expiry
 
+  // Auto-hide. The bar is shown while the cursor is over its strip, hides a beat
+  // after the cursor leaves (so a brief slip off the edge doesn't flicker it), and
+  // peeks for a few seconds when auto-hide is (re)enabled or the app starts.
+  let autoHide = false;
+  let hover = false;
+  let hideTimer = null;
+  const setHidden = (hidden) => {
+    el.dataset.hidden = hidden ? "1" : "";
+  };
+  const hideSoon = (ms) => {
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => setHidden(true), ms);
+  };
+
   return {
+    setAutoHide(on) {
+      autoHide = !!on;
+      clearTimeout(hideTimer);
+      if (!autoHide) return setHidden(false);
+      setHidden(false);
+      if (!hover) hideSoon(PEEK_MS);
+    },
+    setHover(on) {
+      hover = !!on;
+      if (!autoHide) return;
+      clearTimeout(hideTimer);
+      if (hover) setHidden(false);
+      else hideSoon(HIDE_DELAY_MS);
+    },
     setState(s) {
       state = s || { state: "idle" };
       render();

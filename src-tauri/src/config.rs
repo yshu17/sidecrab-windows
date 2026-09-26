@@ -18,6 +18,8 @@ pub struct Config {
     pub plugin_managed: bool,
     /// Cosmetic hat: "none" | "top" | "chef" | "fedora" | "heli".
     pub hat: String,
+    /// Status bar slides away unless the cursor is over its strip.
+    pub auto_hide_status: bool,
 }
 
 impl Default for Config {
@@ -30,6 +32,7 @@ impl Default for Config {
             consent_asked: false,
             plugin_managed: false,
             hat: "none".into(),
+            auto_hide_status: true,
         }
     }
 }
@@ -39,9 +42,11 @@ fn path() -> PathBuf {
 }
 
 pub fn load_from(p: &Path) -> Config {
+    // Windows editors (Notepad, PowerShell's utf8 output) prepend a BOM, which
+    // serde_json rejects — and a rejected file would silently reset every setting.
     std::fs::read_to_string(p)
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
         .unwrap_or_default()
 }
 

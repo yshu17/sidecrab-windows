@@ -155,6 +155,11 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
         .build(app)
         .ok()?;
 
+    let auto_hide = CheckMenuItemBuilder::with_id("status-autohide", "Auto-hide status bar")
+        .checked(cfg.auto_hide_status)
+        .build(app)
+        .ok()?;
+
     let autostart_on = {
         use tauri_plugin_autostart::ManagerExt;
         app.autolaunch().is_enabled().unwrap_or(false)
@@ -175,6 +180,7 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
         .item(&position)
         .item(&hat)
         .item(&wander)
+        .item(&auto_hide)
         .item(&autostart)
         .separator();
     if !cfg.plugin_managed {
@@ -211,7 +217,7 @@ fn show_menu(window: WebviewWindow) {
     let Some(menu) = build_settings_menu(window.app_handle()) else { return };
     // Anchor high enough that the menu never opens past the screen bottom
     // (macOS renders a clipped, scroll-to-reveal menu otherwise).
-    const MENU_H: f64 = 280.0; // generous logical estimate
+    const MENU_H: f64 = 310.0; // generous logical estimate
     let y = match (window.current_monitor(), window.outer_position(), window.scale_factor()) {
         (Ok(Some(mon)), Ok(pos), Ok(scale)) => {
             let below = (mon.position().y + mon.size().height as i32 - pos.y) as f64 / scale;
@@ -245,6 +251,12 @@ fn on_menu(app: &AppHandle, id: &str) {
             let enabled = !config::load().wander_enabled;
             os_actions::set_wander(enabled);
             let _ = app.emit("wander-changed", enabled);
+        }
+        "status-autohide" => {
+            let mut c = config::load();
+            c.auto_hide_status = !c.auto_hide_status;
+            let _ = config::save(&c);
+            let _ = app.emit("status-autohide-changed", c.auto_hide_status);
         }
         "autostart" => {
             use tauri_plugin_autostart::ManagerExt;
@@ -284,8 +296,10 @@ fn spawn_click_through_poller(app: AppHandle) {
     std::thread::spawn(move || {
         let mut ignoring = false;
         let mut hovering = false;
+        let mut over_status_prev = false;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(120));
+            // Short enough that the auto-hiding status bar answers a hover at once.
+            std::thread::sleep(std::time::Duration::from_millis(60));
             let Some(win) = app.get_webview_window("main") else { continue };
             if *app.state::<DragLock>().0.lock().unwrap() {
                 continue;
@@ -309,6 +323,15 @@ fn spawn_click_through_poller(app: AppHandle) {
             if over_crab != hovering {
                 hovering = over_crab;
                 let _ = app.emit("crab-hover", hovering);
+            }
+            // The status bar's strip (bottom STATUS_H of the window) is click-through,
+            // so its hover comes from this poll too — it keeps working while the bar
+            // is hidden, and the frontend uses it to slide the bar back in.
+            let strip = os_actions::STATUS_H * win.scale_factor().unwrap_or(1.0);
+            let over_status = inside_window && ly >= size.height as f64 - strip;
+            if over_status != over_status_prev {
+                over_status_prev = over_status;
+                let _ = app.emit("status-hover", over_status);
             }
             // Ignore events only while the cursor is over empty pixels of our window;
             // outside the window the flag is irrelevant, so reset it for safety.

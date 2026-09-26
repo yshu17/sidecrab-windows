@@ -20,9 +20,30 @@ fn round_trips() {
         consent_asked: true,
         plugin_managed: true,
         hat: "fedora".into(),
+        auto_hide_status: false,
     };
     save_to(&path, &c).unwrap();
     assert_eq!(load_from(&path), c);
+}
+
+#[test]
+fn auto_hide_defaults_on_and_survives_old_configs() {
+    assert!(Config::default().auto_hide_status);
+    // A config.json written before the setting existed has no such key.
+    let path = tmp("old");
+    std::fs::write(&path, r#"{"size":"S","hat":"chef"}"#).unwrap();
+    let c = load_from(&path);
+    assert_eq!(c.size, "S");
+    assert!(c.auto_hide_status);
+}
+
+#[test]
+fn utf8_bom_is_tolerated() {
+    let path = tmp("bom");
+    std::fs::write(&path, "\u{feff}{\"size\":\"L\",\"autoHideStatus\":false}").unwrap();
+    let c = load_from(&path);
+    assert_eq!(c.size, "L");
+    assert!(!c.auto_hide_status);
 }
 
 #[test]

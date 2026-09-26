@@ -21,9 +21,15 @@ window.addEventListener("DOMContentLoaded", async () => {
     const behavior = attachBehavior({ renderer, sm });
     const { listen } = window.__TAURI__.event;
     const { invoke } = window.__TAURI__.core;
-    invoke("get_config").then((c) => c && renderer.setHat(c.hat));
-    await listen("hat-changed", (e) => renderer.setHat(e.payload));
     const status = attachStatus(document.getElementById("status"));
+    invoke("get_config").then((c) => {
+      if (!c) return;
+      renderer.setHat(c.hat);
+      status.setAutoHide(c.autoHideStatus);
+    });
+    await listen("hat-changed", (e) => renderer.setHat(e.payload));
+    await listen("status-autohide-changed", (e) => status.setAutoHide(e.payload));
+    await listen("status-hover", (e) => status.setHover(e.payload));
     await listen("claude-limits", (e) => status.setLimits(e.payload));
     await listen("claude-sessions", (e) => status.setSessions(e.payload));
     await listen("claude-state", (e) => {

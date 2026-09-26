@@ -53,6 +53,8 @@ There are two processes and they communicate only through files:
 
 The webview pulls `status_snapshot` once its listeners are attached, because events emitted before that are lost.
 
+**Auto-hide.** `Config.auto_hide_status` (default on; menu item "Auto-hide status bar", event `status-autohide-changed`) makes `status.js` set `data-hidden` on `#status`: the panel slides down (`transform`, so layout and the window never change) and leaves a 4px handle tinted with the state colour. The panel is click-through, so hover comes from the Rust cursor poller in `lib.rs`, which emits `status-hover` while the cursor is in the bottom `STATUS_H` of the window (it polls every 60 ms and works while the panel is hidden). The panel hides 350 ms after the cursor leaves and peeks for 3 s at startup and when the setting is switched on. `config.json` is parsed with any UTF-8 BOM stripped: a rejected file would silently reset all settings.
+
 **Sessions and lifecycle** (`sessions.rs`, `claude_proc.rs`). Each `sessions.d/<session_id>` record is JSON. The hook stamps it with the nearest `claude.exe` ancestor (pid + creation time, found through ToolHelp). `sessions.rs` polls every 2 s: records whose process is gone are deleted, because SessionEnd does not fire on terminal close or kill. It emits `claude-sessions`. When launched with `--plugin` (or when a later `--plugin` launch is forwarded by single-instance), the pet exits once a session has been seen and none remain. A manual launch without `--plugin` is not bound to Claude. `claude_proc.rs` is compiled into the hook crate via `#[path]`. On non-Windows there is no owner pid, so records live until SessionEnd.
 
 `paths::home()` in the app and `home()` in the hook are intentionally duplicated. Keep them in sync.
