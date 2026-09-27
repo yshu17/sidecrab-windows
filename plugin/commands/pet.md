@@ -1,5 +1,5 @@
 ---
-description: Summon or toggle the Sidecrab desktop pet (alias of /pet)
+description: Summon or toggle the Sidecrab desktop pet (alias of /sidecrab)
 allowed-tools: Bash
 ---
 Run this and report only its last line to the user, verbatim:

@@ -375,9 +375,14 @@ pub fn run() {
     tauri::Builder::default()
         // Second launch = no twin crabs; the existing instance just stays.
         // A plugin launch from a new session re-arms the Claude-bound lifecycle.
-        .plugin(tauri_plugin_single_instance::init(|_app, args, _cwd| {
+        // `--toggle` (the /pet, /sidecrab commands) shows/hides the existing
+        // window instead of a second process ever starting one.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--plugin") {
                 sessions::exit_with_claude();
+            }
+            if args.iter().any(|a| a == "--toggle") {
+                os_actions::toggle_visibility(app);
             }
         }))
         .plugin(tauri_plugin_autostart::init(
@@ -417,6 +422,9 @@ pub fn run() {
             let win = app.get_webview_window("main").expect("main window");
             // Float above other apps on every Space.
             let _ = win.set_visible_on_all_workspaces(true);
+            // Window starts visible (tauri.conf.json has no "visible": false); the
+            // /pet, /sidecrab command reads this to report shown vs. hidden.
+            os_actions::write_visible_flag(true);
 
             let cfg = config::load();
             let (lw, lh) = os_actions::logical_size(&cfg.size);
