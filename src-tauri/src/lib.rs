@@ -1,5 +1,6 @@
 pub mod claude_proc;
 pub mod config;
+pub mod debug_log;
 pub mod hook_installer;
 pub mod idle_monitor;
 pub mod os_actions;
@@ -407,6 +408,12 @@ pub fn run() {
             usage_api::refresh_usage,
         ])
         .setup(|app| {
+            // Diagnostic only (SIDECRAB_DEBUG=1): times this closure, which runs on
+            // Tauri's own startup — never anything Claude Code's hook runner waits
+            // on, since the SessionStart hook already returned before this process
+            // was even fully created (see main.rs: the launcher spawns detached).
+            let debug_home = paths::home();
+            let _t = debug_log::Timer::start(&debug_home, "app.setup");
             let win = app.get_webview_window("main").expect("main window");
             // Float above other apps on every Space.
             let _ = win.set_visible_on_all_workspaces(true);

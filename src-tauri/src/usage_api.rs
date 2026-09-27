@@ -8,6 +8,7 @@
 //! good limits.json in place — the webview hides it once `resetsAt` passes —
 //! and backs off. The token is read per request and never stored or logged.
 
+use crate::debug_log;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::sync::{Condvar, Mutex};
@@ -52,7 +53,12 @@ fn now_ms() -> i64 {
 }
 
 /// Headers go through stdin (`-H @-`) so the token never appears on a command line.
+/// Always called from a background thread (see `spawn`/`request_refresh`), never
+/// from Tauri's setup() or the main thread — this can take up to the curl
+/// `--max-time` below, which must never be on the startup path.
 fn fetch(token: &str) -> Fetch {
+    let home = crate::paths::home();
+    let _t = debug_log::Timer::start(&home, "usage_api.fetch");
     let mut cmd = Command::new("curl");
     cmd.args(["-s", "--max-time", "15", "-w", "\n%{http_code} %header{retry-after}", "-H", "@-", URL])
         .stdin(Stdio::piped())
@@ -63,22 +69,37 @@ fn fetch(token: &str) -> Fetch {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let Ok(mut child) = cmd.spawn() else { return Fetch::Failed };
+    let Ok(mut child) = cmd.spawn() else {
+        debug_log::log(&home, "usage_api.fetch error=spawn_failed");
+        return Fetch::Failed;
+    };
     let headers = format!(
         "Authorization: Bearer {token}\nanthropic-beta: oauth-2025-04-20\nUser-Agent: sidecrab\n"
     );
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(headers.as_bytes());
     }
-    let Ok(out) = child.wait_with_output() else { return Fetch::Failed };
+    let Ok(out) = child.wait_with_output() else {
+        debug_log::log(&home, "usage_api.fetch error=curl_wait_failed");
+        return Fetch::Failed;
+    };
     let text = String::from_utf8_lossy(&out.stdout);
-    let Some((body, status)) = text.rsplit_once('\n') else { return Fetch::Failed };
+    let Some((body, status)) = text.rsplit_once('\n') else {
+        debug_log::log(&home, "usage_api.fetch error=no_status_line");
+        return Fetch::Failed;
+    };
     let mut status = status.split_whitespace();
-    match (status.next(), status.next().and_then(|s| s.parse::<u64>().ok())) {
+    let result = match (status.next(), status.next().and_then(|s| s.parse::<u64>().ok())) {
         (Some("200"), _) => serde_json::from_str(body).map_or(Fetch::Failed, Fetch::Ok),
         (Some("429"), Some(secs)) => Fetch::RetryAfter(secs),
         _ => Fetch::Failed,
-    }
+    };
+    debug_log::log(&home, &format!("usage_api.fetch outcome={}", match result {
+        Fetch::Ok(_) => "ok",
+        Fetch::RetryAfter(_) => "retry_after",
+        Fetch::Failed => "failed",
+    }));
+    result
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant).

@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 
 #[path = "../../src/claude_proc.rs"]
 mod claude_proc;
+#[path = "../../src/debug_log.rs"]
+mod debug_log;
 
 // Mirror of sidecrab_lib::paths::home() — duplicated so this crate stays free
 // of the tauri dependency tree. Keep the two in sync.
@@ -248,11 +250,15 @@ fn statusline(dir: &Path, p: &Value) {
 
 fn main() {
     let event = std::env::args().nth(1).unwrap_or_default();
+    let dir = home();
+    // Diagnostic only (SIDECRAB_DEBUG=1): every hook Claude Code runs is a fresh
+    // process (through Git Bash on Windows), so this times the whole thing —
+    // stdin read, disk I/O, everything below — for exactly this invocation.
+    // Covers every early `return` below since it's dropped at function exit.
+    let _t = debug_log::Timer::start(&dir, format!("hook.{}", if event.is_empty() { "?" } else { &event }));
     let mut raw = String::new();
     let _ = std::io::stdin().read_to_string(&mut raw);
     let p: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
-
-    let dir = home();
     if event == "statusline" {
         statusline(&dir, &p);
         return;
