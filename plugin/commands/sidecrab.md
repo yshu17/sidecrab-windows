@@ -1,29 +1,52 @@
 ---
-description: Summon or toggle the Sidecrab desktop pet (alias of /pet)
+description: Turn the Sidecrab desktop pet on/off, or show its state (alias of /pet)
 allowed-tools: Bash
 ---
-Run this and report only its last line to the user, verbatim:
+The user's argument, if any, is: $ARGUMENTS
 
+Sidecrab is off by default and never launches on its own — only this command
+starts it. Pick exactly one script below based on the argument (case-insensitive)
+and run it, then report only its last line to the user, verbatim — no extra
+commentary:
+
+- empty argument -> run "Status"
+- `on` -> run "On"
+- `off` -> run "Off"
+- anything else -> tell the user only `on`, `off`, or no argument (status) are valid; run nothing
+
+Status:
 ```bash
-BEFORE_PID=$(tasklist //FI "IMAGENAME eq sidecrab.exe" //NH 2>/dev/null | grep -i sidecrab.exe | awk '{print $2}' | head -1)
-"${CLAUDE_PLUGIN_ROOT}/bin/sidecrab.exe" --plugin --toggle
-# The line above returns almost instantly either way: if Sidecrab wasn't
-# running it only spawns a detached process and hands off; if it was, it just
-# forwarded this call to the existing instance. Give the window a moment to
-# appear/react, without blocking indefinitely — existing settings, position,
-# status bar, usage and hooks are never touched by this command.
-FLAG="$APPDATA/sidecrab/ui_state.json"
+tasklist //FI "IMAGENAME eq sidecrab.exe" 2>/dev/null | grep -qi sidecrab.exe && echo "Pet: ON" || echo "Pet: OFF"
+```
+
+On (starts Sidecrab if it isn't running yet, or shows/re-arms it if it already is — never a second instance):
+```bash
+"${CLAUDE_PLUGIN_ROOT}/bin/sidecrab.exe" --plugin --show
 for i in $(seq 1 20); do
   tasklist //FI "IMAGENAME eq sidecrab.exe" 2>/dev/null | grep -qi sidecrab.exe && break
   sleep 0.25
 done
-if ! tasklist //FI "IMAGENAME eq sidecrab.exe" 2>/dev/null | grep -qi sidecrab.exe; then
-  echo "Sidecrab did not start — check that it's installed (install-windows.ps1)."
-elif [ -z "$BEFORE_PID" ]; then
-  echo "Sidecrab started (existing settings, position and hooks apply)."
-elif grep -q '"visible":true' "$FLAG" 2>/dev/null; then
-  echo "Sidecrab shown."
+if tasklist //FI "IMAGENAME eq sidecrab.exe" 2>/dev/null | grep -qi sidecrab.exe; then
+  echo "Pet: ON"
 else
-  echo "Sidecrab hidden (run this again to bring it back)."
+  echo "Pet: ON requested, but it did not start — check it's installed (install-windows.ps1)."
+fi
+```
+
+Off (stops the Sidecrab process entirely — no window, no hooks doing real work, no usage-API calls until /pet on again):
+```bash
+if ! tasklist //FI "IMAGENAME eq sidecrab.exe" 2>/dev/null | grep -qi sidecrab.exe; then
+  echo "Pet: OFF"
+else
+  "${CLAUDE_PLUGIN_ROOT}/bin/sidecrab.exe" --quit
+  for i in $(seq 1 20); do
+    tasklist //FI "IMAGENAME eq sidecrab.exe" 2>/dev/null | grep -qi sidecrab.exe || break
+    sleep 0.25
+  done
+  if tasklist //FI "IMAGENAME eq sidecrab.exe" 2>/dev/null | grep -qi sidecrab.exe; then
+    echo "Pet: OFF requested, still shutting down."
+  else
+    echo "Pet: OFF"
+  fi
 fi
 ```

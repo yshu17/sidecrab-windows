@@ -79,7 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/sidecrab.exe\" --plugin"
+            "command": "tasklist //FI \"IMAGENAME eq sidecrab.exe\" 2>/dev/null | grep -qi sidecrab.exe && \"${CLAUDE_PLUGIN_ROOT}/bin/sidecrab.exe\" --plugin; true"
           },
           {
             "type": "command",

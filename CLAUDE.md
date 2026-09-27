@@ -84,7 +84,16 @@ If a session still looks stuck right after opening (long "loading", the first me
 
 ## Plugin mode
 
-This repo is also a local Claude Code marketplace (`.claude-plugin/marketplace.json`, name `local`); the plugin `sidecrab@local` lives in `plugin/`. Its `hooks/hooks.json` calls `${CLAUDE_PLUGIN_ROOT}/bin/sidecrab-hook.exe`. Its `SessionStart` also launches `sidecrab.exe --plugin`. That sets `Config.plugin_managed`, which suppresses the consent dialog and the install/remove-hooks menu item. Do not also install hooks into `settings.json` while the plugin is enabled: every event would fire twice.
+This repo is also a local Claude Code marketplace (`.claude-plugin/marketplace.json`, name `local`); the plugin `sidecrab@local` lives in `plugin/`. Its `hooks/hooks.json` calls `${CLAUDE_PLUGIN_ROOT}/bin/sidecrab-hook.exe` for every event. Do not also install hooks into `settings.json` while the plugin is enabled: every event would fire twice.
+
+**Off by default; `/pet`/`/sidecrab` (`plugin/commands/`) are the only way to start it.** Sidecrab never auto-launches: `SessionStart` only runs `sidecrab-hook.exe start` (local disk I/O, no network — see the diagnostics paragraph above) plus a `tasklist`-guarded `sidecrab.exe --plugin` that does nothing unless Sidecrab is *already* running (see below). `/pet on` (or `/sidecrab on`) launches it; `/pet off` quits it entirely — no window, no background threads, no usage-API calls until turned on again; bare `/pet`/`/sidecrab` reports `Pet: ON`/`Pet: OFF` (`tasklist` for `sidecrab.exe`, the ground truth — no separate "enabled" flag is persisted, so a fresh boot/Claude Code install is OFF with no extra state to reset).
+
+Three CLI flags on `sidecrab.exe`, all handled in the `tauri_plugin_single_instance` callback in `lib.rs` (fires only in the one already-running instance a second launch collides with, so none of them can ever start a duplicate):
+- `--show` (`/pet on`): raise and show the window, unconditionally (never hides — not a toggle).
+- `--quit` (`/pet off`): `app.exit(0)` on the real instance.
+- `--plugin` (SessionStart's re-arm, and `/pet on`): re-arms `sessions::exit_with_claude()` — the pet quits once every Claude Code session it's tracked (via `sessions.d`) has ended. Sets `Config.plugin_managed`, which suppresses the consent dialog and the install/remove-hooks menu item.
+
+`--plugin` and `--quit` presuppose an existing instance; sent to a *fresh* one (Sidecrab was off, or a race/stale check), `.setup()`'s very first lines detect this (no other instance was found to collide with) and call `app.handle().exit(0)` immediately, before any window is meaningfully used or a single background thread (usage API, watchers, pollers) starts — the only way to actually start Sidecrab is a bare launch (no flags) or `--show`. This is why `SessionStart`'s `sidecrab.exe --plugin` needs its own `tasklist` pre-check in `hooks.json` too: without it, every session start would still spawn (and instantly self-exit) a process — harmless, but needless work on Claude Code's own hook path.
 
 Claude Code caches plugins by version. After rebuilding, bump `version` in `plugin/.claude-plugin/plugin.json`, then run `claude plugin marketplace update local` and `claude plugin update sidecrab@local`.
 

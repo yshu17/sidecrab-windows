@@ -374,15 +374,19 @@ pub fn run() {
     }
     tauri::Builder::default()
         // Second launch = no twin crabs; the existing instance just stays.
-        // A plugin launch from a new session re-arms the Claude-bound lifecycle.
-        // `--toggle` (the /pet, /sidecrab commands) shows/hides the existing
-        // window instead of a second process ever starting one.
+        // A `--plugin` launch (SessionStart's re-arm, or `/pet on`) re-arms the
+        // Claude-bound lifecycle. `--show` (`/pet on`) raises the window.
+        // `--quit` (`/pet off`) exits it. See `setup()` below for what stops any
+        // of these three from ever starting a fresh instance on their own.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--plugin") {
                 sessions::exit_with_claude();
             }
-            if args.iter().any(|a| a == "--toggle") {
-                os_actions::toggle_visibility(app);
+            if args.iter().any(|a| a == "--show") {
+                os_actions::ensure_visible(app);
+            }
+            if args.iter().any(|a| a == "--quit") {
+                app.exit(0);
             }
         }))
         .plugin(tauri_plugin_autostart::init(
@@ -413,18 +417,36 @@ pub fn run() {
             usage_api::refresh_usage,
         ])
         .setup(|app| {
-            // Diagnostic only (SIDECRAB_DEBUG=1): times this closure, which runs on
-            // Tauri's own startup — never anything Claude Code's hook runner waits
-            // on, since the SessionStart hook already returned before this process
-            // was even fully created (see main.rs: the launcher spawns detached).
+            // Reaching setup() at all means no other Sidecrab was found running:
+            // this process itself is about to become the (new) instance — the
+            // single-instance plugin above already would have forwarded and
+            // killed it otherwise. `--plugin`-only (SessionStart's "re-arm the
+            // lifecycle if it's already running" signal — see plugin/hooks/hooks.json,
+            // which only sends it after its own tasklist check) and `--quit`-only
+            // (`/pet off`) both presuppose an existing instance; if there wasn't
+            // one, there is nothing to manage, so exit right now — before a
+            // window is ever meaningfully shown or a single background thread
+            // (usage API, watchers, pollers) starts. This is what keeps Sidecrab
+            // off by default: only a bare launch (no flags: a manual double-click
+            // or `sidecrab` on PATH) or an explicit `--show` (`/pet on`) may
+            // actually start it.
+            let args: Vec<String> = std::env::args().collect();
+            let has = |f: &str| args.iter().any(|a| a == f);
+            if (has("--plugin") || has("--quit")) && !has("--show") {
+                app.handle().exit(0);
+                return Ok(());
+            }
+            // Diagnostic only (SIDECRAB_DEBUG=1): times the rest of this closure,
+            // which runs on Tauri's own startup — never anything Claude Code's
+            // hook runner waits on, since the SessionStart hook already returned
+            // before this process was even fully created (main.rs's launcher
+            // spawns detached), and by the point above this process is only ever
+            // reached via a bare launch or an explicit /pet on.
             let debug_home = paths::home();
             let _t = debug_log::Timer::start(&debug_home, "app.setup");
             let win = app.get_webview_window("main").expect("main window");
             // Float above other apps on every Space.
             let _ = win.set_visible_on_all_workspaces(true);
-            // Window starts visible (tauri.conf.json has no "visible": false); the
-            // /pet, /sidecrab command reads this to report shown vs. hidden.
-            os_actions::write_visible_flag(true);
 
             let cfg = config::load();
             let (lw, lh) = os_actions::logical_size(&cfg.size);

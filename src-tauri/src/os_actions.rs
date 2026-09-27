@@ -173,34 +173,19 @@ pub fn resize_window(window: WebviewWindow, size: String) {
     let _ = config::save(&c);
 }
 
-/// Where `visible_flag` records the window's shown/hidden state, so the
-/// `/pet`/`/sidecrab` command's shell script can report which one actually
-/// happened (`toggle_visibility` runs in a different process from the one the
-/// command invoked — its own exit code says nothing about the outcome).
-fn visible_flag_path() -> std::path::PathBuf {
-    crate::paths::home().join("ui_state.json")
-}
-
-pub fn write_visible_flag(visible: bool) {
-    let _ = std::fs::write(visible_flag_path(), serde_json::json!({ "visible": visible }).to_string());
-}
-
-/// `/pet`/`/sidecrab` command support (a second `sidecrab.exe --toggle` launch,
-/// forwarded here by tauri-plugin-single-instance instead of starting a second
-/// process): visible -> hide, hidden -> show, raised and unminimized. Never
-/// steals focus (`focus: false` in tauri.conf.json is deliberate for a pet that
-/// sits over whatever the user is doing), and touches nothing else — position,
-/// size, hat, status bar, hooks and session state are all untouched.
-pub fn toggle_visibility(app: &AppHandle) {
+/// `/pet on` support (a `sidecrab.exe --show` launch, forwarded here by
+/// tauri-plugin-single-instance when Sidecrab is already running instead of
+/// starting a second process): raise and show the window, unconditionally —
+/// never hides it, unlike a toggle, so calling `/pet on` twice can't
+/// accidentally turn the pet off. Never steals focus (`focus: false` in
+/// tauri.conf.json is deliberate for a pet that sits over whatever the user is
+/// doing), and touches nothing else — position, size, hat, status bar, hooks
+/// and session state are all untouched. When Sidecrab wasn't running at all,
+/// this never runs: the freshly created window is visible by default.
+pub fn ensure_visible(app: &AppHandle) {
     let Some(win) = app.get_webview_window("main") else { return };
-    let visible = win.is_visible().unwrap_or(true);
-    if visible {
-        let _ = win.hide();
-    } else {
-        let _ = win.unminimize();
-        let _ = win.show();
-    }
-    write_visible_flag(!visible);
+    let _ = win.unminimize();
+    let _ = win.show();
 }
 
 #[tauri::command]
