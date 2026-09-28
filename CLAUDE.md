@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Sidecrab: a Tauri 2 desktop pet (pixel crab) that reacts to Claude Code activity. Upstream `zvoque/sidecrab` is macOS-only (brew). This fork (`yshu17/sidecrab-windows`, public; branch `windows` tracks its `main`) adds Windows support and a Claude Code plugin mode.
+Sidecrab: a Tauri 2 desktop pet (pixel crab) that reacts to Claude Code activity. Upstream `zvoque/sidecrab` is macOS-only (brew). This is a GitHub fork (`yshu17/sidecrab-windows`, public) of `whorlyknows/sidecrab-windows`; its default branch is `windows` (the fork's `main` stays the upstream snapshot), and it adds Windows support and a Claude Code plugin mode.
 
 ## Commands
 

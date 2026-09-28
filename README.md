@@ -177,6 +177,7 @@ Open `src/index.html` in a browser to work on the animations without Tauri
 ## Credits
 
 - Original app: [zvoque/sidecrab](https://github.com/zvoque/sidecrab).
+- Windows port this repository was forked from: [whorlyknows/sidecrab-windows](https://github.com/whorlyknows/sidecrab-windows).
 - Activity detection design and walk-cycle frames:
   [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar).
   See [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
