@@ -287,3 +287,26 @@ fn session_start_fills_usage_from_resumed_transcript() {
     assert_eq!(rec["tokens"], 100.0);
     assert_eq!(rec["model"], "Sonnet 5");
 }
+
+/// session_id becomes a file name under sessions.d: it must never escape it.
+#[test]
+fn hostile_session_ids_stay_inside_sessions_dir() {
+    let home = tmp_home("hostile-sid");
+    for sid in ["..", "../../outside", r"..\..\outside", "a/../../b", "..."] {
+        let payload = format!(r#"{{"session_id":{}}}"#, serde_json::json!(sid));
+        run_hook(&home, "start", &payload, &[]);
+        run_hook(&home, "end", &payload, &[]);
+    }
+    let escaped: Vec<_> = std::fs::read_dir(&home)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !matches!(n.as_str(), "sessions.d" | "state.json"))
+        .collect();
+    assert!(escaped.is_empty(), "files written outside sessions.d: {escaped:?}");
+    assert!(!home.parent().unwrap().join("outside").exists());
+    for e in std::fs::read_dir(home.join("sessions.d")).unwrap().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        assert!(!name.contains('.') && !name.is_empty(), "suspicious record name {name:?}");
+    }
+}

@@ -16,6 +16,23 @@ fn main() {
     let foreground = std::env::args().any(|a| a == "--foreground")
         || std::env::var_os("SIDECRAB_CHILD").is_some();
     if !foreground {
+        // Windows spawns inherit every inheritable handle, Stdio::null() or not.
+        // Our own stdout/stderr are usually the caller's pipe, so the long-lived
+        // pet would keep it open and anyone reading our output to EOF (a hook
+        // runner, a script) would wait for as long as the pet lives.
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+            use windows_sys::Win32::System::Console::{
+                GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+            };
+            for std in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                let h = GetStdHandle(std);
+                if !h.is_null() {
+                    SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
         if let Ok(exe) = std::env::current_exe() {
             let ok = std::process::Command::new(exe)
                 .args(std::env::args().skip(1))

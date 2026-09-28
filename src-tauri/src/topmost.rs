@@ -49,7 +49,10 @@ mod win {
 
     /// Put `hwnd` back on top of the topmost band (no focus change) if a
     /// normal window covers it. Returns true if it was raised.
-    pub fn raise_if_covered(hwnd: HWND) -> bool {
+    ///
+    /// # Safety
+    /// `hwnd` must be a window handle (it is passed to Win32 as is).
+    pub unsafe fn raise_if_covered(hwnd: HWND) -> bool {
         if !needs_raise(windows_above(hwnd)) {
             return false;
         }
@@ -68,7 +71,8 @@ pub fn spawn(app: AppHandle) {
         std::thread::sleep(std::time::Duration::from_millis(500));
         let Some(win) = app.get_webview_window("main") else { continue };
         let Ok(h) = win.hwnd() else { continue };
-        raise_if_covered(h.0 as _);
+        // SAFETY: a live HWND of our own main window, fetched this iteration.
+        unsafe { raise_if_covered(h.0 as _) };
     });
 }
 

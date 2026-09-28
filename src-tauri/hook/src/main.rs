@@ -51,7 +51,9 @@ fn safe_id(v: &Value) -> String {
         .as_str()
         .unwrap_or("")
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c))
+        // No '.': ids like ".." or "..." would resolve outside sessions.d or
+        // leave stray temp files (Windows drops trailing dots). Real ids are UUIDs.
+        .filter(|c| c.is_ascii_alphanumeric() || "_-".contains(*c))
         .take(64)
         .collect()
 }
@@ -75,9 +77,21 @@ fn write_atomic(path: &Path, v: &Value) {
         let _ = std::fs::create_dir_all(dir);
     }
     let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-    if std::fs::write(&tmp, v.to_string()).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
+    if std::fs::write(&tmp, v.to_string()).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
     }
+    // Windows: antivirus/indexer can hold a just-written file for a moment and
+    // make the rename fail. Retry briefly, and never leave the .tmp behind.
+    for attempt in 0..3 {
+        if std::fs::rename(&tmp, path).is_ok() {
+            return;
+        }
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
 }
 
 /// Reset a frozen mid-turn state, but only when `sid` owns it. Force-quit fires

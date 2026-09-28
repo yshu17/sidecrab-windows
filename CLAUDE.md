@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Sidecrab: a Tauri 2 desktop pet (pixel crab) that reacts to Claude Code activity. Upstream `zvoque/sidecrab` is macOS-only (brew). This fork (`yshu17/sidecrab-windows`, private; branch `windows` tracks its `main`) adds Windows support and a Claude Code plugin mode.
+Sidecrab: a Tauri 2 desktop pet (pixel crab) that reacts to Claude Code activity. Upstream `zvoque/sidecrab` is macOS-only (brew). This fork (`yshu17/sidecrab-windows`, public; branch `windows` tracks its `main`) adds Windows support and a Claude Code plugin mode.
 
 ## Commands
 
@@ -30,6 +30,12 @@ Two processes, talking only through files under `SIDECRAB_HOME` (default `%APPDA
 1. **`sidecrab-hook`** (`hook/src/main.rs`, no Tauri deps): Claude Code runs `sidecrab-hook <prompt|pre|post|notify|permreq|stop|fail|start|end|statusline>` with event JSON on stdin. Writes `state.json` atomically and `sessions.d/<session_id>`. Local disk I/O only, never network.
 2. **App** (`src/*.rs`): `state_watcher.rs` watches the state *directory* (tmp+rename replaces the inode) and emits `claude-state`; `lib.rs` has setup, right-click menu, consent dialog and the 60 ms cursor poller (click-through via the opaque sprite rect, `crab-hover`, `status-hover`); `os_actions.rs` holds webview commands; `hook_installer.rs` merges hooks into `~/.claude/settings.json` (backup once, additive, idempotent, marker `sidecrab-hook`); `idle_monitor.rs` idleness for wander; `topmost.rs` keeps the pet on top (below).
 3. **Frontend** (`src/`, plain ES modules, no bundler): `state-machine.js` maps `idle|thinking|tool|permission|done` to animations and runs micro-life/sleep; `sprites.js` draws `frames.js` (29 frames, 51×36, base64 PNG) on a canvas; `behavior.js` wander/chase; `input.js` drag, double-click, right-click; `status.js` the status panel. Rust never draws — it only sends events.
+
+**Rendering is on demand** (`sprites.js`): the loop redraws only when a render key changes (anim, step, facing, hat/rotor phase, blink, thought phase, canvas size, image ready) and sleeps until the next due change (`_nextDelay`) instead of running `requestAnimationFrame` every refresh; `play`/`setFacing`/`setHat`/`setThought`/resize/image load call `_kick()` to render at once. Anything new that changes the picture must be in the key and wake the loop. (Continuous rAF cost ~30% of a core in WebView2; now ~6% total.)
+
+**Security:** strict CSP in `tauri.conf.json` (self scripts/styles, `data:` images for the frames, Tauri IPC only). The UI writes text only via `textContent` — keep it that way, hook data (tool/model names) is untrusted. The hook reduces `session_id` to `[A-Za-z0-9_-]` before using it as a file name.
+
+**Launcher handles:** `main.rs` clears HANDLE_FLAG_INHERIT on its own std handles before spawning the detached pet; otherwise the pet inherits the caller's stdout pipe and anything reading the launcher's output to EOF waits for the pet's whole lifetime.
 
 `paths::home()` (app) and `home()` (hook) are duplicated on purpose; keep them in sync. `claude_proc.rs` and `debug_log.rs` are shared into the hook crate via `#[path]`.
 

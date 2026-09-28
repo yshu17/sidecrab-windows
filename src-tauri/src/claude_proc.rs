@@ -86,7 +86,7 @@ mod imp {
     /// Any process with this exe name (case-insensitive). Errs on "running"
     /// if the process list can't be read.
     pub fn any_named(exe: &str) -> bool {
-        process_table().map_or(true, |t| t.values().any(|(_, n)| n.eq_ignore_ascii_case(exe)))
+        process_table().is_none_or(|t| t.values().any(|(_, n)| n.eq_ignore_ascii_case(exe)))
     }
 
     /// True while that exact process (same pid AND same creation time) runs.

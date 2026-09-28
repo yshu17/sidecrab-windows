@@ -1,16 +1,16 @@
 <div align="center">
 
-# 🦀 Sidecrab
+# 🦀 Sidecrab for Windows
 
-**A desktop pet for Claude Code.**
+**A desktop pet for Claude Code, ported to Windows.**
 
 A tiny always-on-top pixel crab that lives on your screen and reacts to what
 Claude is doing. He sits at his laptop while Claude works, waves you down when a
 tool needs permission, wanders off when you step away, and naps when things go
-quiet.
+quiet. Under him sits a small status bar with Claude's activity, context usage
+and your 5-hour limit.
 
-Inspired by the Codex pet in the ChatGPT desktop app and
-[claude-status-bar](https://github.com/m1ckc3s/claude-status-bar).
+Windows fork of [zvoque/sidecrab](https://github.com/zvoque/sidecrab) (macOS).
 
 <img src="docs/gifs/hero.gif" width="480" alt="Sidecrab on the desktop">
 
@@ -26,6 +26,20 @@ Inspired by the Codex pet in the ChatGPT desktop app and
 
 ...and a handful of other moods and moves he'll show you himself.
 
+## What this fork adds
+
+- **Windows build**: native Win32 idle detection, click-through outside the
+  sprite, and a watchdog that keeps him above ordinary windows (the Claude
+  desktop app, browsers) without fighting other always-on-top apps.
+- **Claude Code plugin mode**: `/pet on`, `/pet off` and `/pet` (status) from
+  any Claude Code chat. He is off until you ask for him, and quits by himself
+  about 15 seconds after the last Claude Code process closes.
+- **Status bar**: activity dot, model and tokens, context meter, and the 5-hour
+  usage meter with its local reset time. Compact mode shows a small plate that
+  expands on hover.
+- **Light on the machine**: the sprite is redrawn only when the picture
+  changes, so an idle pet uses a few percent of one CPU core.
+
 ## Interactions
 
 | Do this | He does |
@@ -34,8 +48,8 @@ Inspired by the Codex pet in the ChatGPT desktop app and
 | **Double-click** | focuses the app running your session |
 | **Right-click** | opens settings |
 
-**Wander when idle** (off by default): after you've been away ~30 seconds he
-takes little strolls around the screen, then scurries home when you're back.
+The right-click menu has size, position, hats, **Wander when idle**, compact
+status bar, **Launch at login**, **Refresh usage** and **Check for Updates…**.
 
 ## Hats
 
@@ -46,30 +60,89 @@ Whatever he's wearing rides along through every animation.
 
 ## Requirements
 
-Just Claude Code. No node, no python, nothing else. The activity feed comes from
-a small bundled binary that runs off Claude Code's hooks. Verified with the
-**CLI** and the **Claude desktop app**; any other surface that fires the hooks in
-your `~/.claude/settings.json` works too.
+- Windows 10 or 11 with the WebView2 runtime (preinstalled on Windows 11).
+- [Claude Code](https://claude.com/claude-code): the CLI or the Claude desktop app.
+- To build: [Rust](https://rustup.rs) (MSVC toolchain), [Node.js](https://nodejs.org)
+  and Git. There are no prebuilt binaries yet.
 
 ## Install
 
-```bash
-brew install zvoque/tap/sidecrab
-sidecrab
+```powershell
+git clone https://github.com/yshu17/sidecrab-windows.git
+cd sidecrab-windows
+powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
 ```
 
-He appears bottom-right and your terminal is free. On first launch he asks before
-adding a few hooks to `~/.claude/settings.json` so he can tell when Claude is
-working. Your file is backed up first, and you can remove them anytime from his
-right-click menu.
+The script builds `sidecrab.exe` and `sidecrab-hook.exe`, copies them to
+`%LOCALAPPDATA%\Programs\sidecrab`, and adds that folder to your user `PATH`.
 
-Everything else lives in that menu: size, position, hats, wander, and **Launch
-at login**. Update with `brew upgrade sidecrab`.
+Then pick **one** way to connect him to Claude Code.
 
-## Coming later
+### Option A: Claude Code plugin (recommended)
 
-- A downloadable `.dmg` for a no-terminal install
-- A Windows build
+```powershell
+claude plugin marketplace add .
+claude plugin install sidecrab@local
+```
+
+Restart Claude Code, then in any chat:
+
+| Command | Result |
+|---|---|
+| `/pet on` | starts the pet, or shows it if it is already running |
+| `/pet off` | quits the pet completely |
+| `/pet` | tells you whether it is running |
+
+`/sidecrab` is an alias of `/pet`.
+
+### Option B: standalone
+
+Run `sidecrab` from any terminal. On first launch he asks before adding a few
+hooks to `~/.claude/settings.json`. The file is backed up first, and you can
+remove the hooks from the right-click menu at any time.
+
+Don't use both options at once: every event would reach him twice.
+
+## Update
+
+```powershell
+sidecrab-update
+```
+
+This pulls the latest commits (fast-forward only) and reruns the installer. The
+installer also refreshes the plugin when `claude` is on your `PATH`.
+**Check for Updates…** in the right-click menu tells you when a newer release is
+published here. It never downloads anything.
+
+## Privacy and security
+
+- The hook only writes small JSON files under `%APPDATA%\sidecrab`. It never
+  touches the network, and it returns in about 10 ms, so Claude Code never waits
+  on it.
+- For the 5-hour meter the pet asks Anthropic's usage endpoint with your existing
+  Claude Code login from `~/.claude/.credentials.json`, at most every 30 minutes.
+  The token goes to `curl` through stdin; it is never logged or written anywhere.
+- The update check reads this repository's latest release from the GitHub API.
+- The window runs under a strict Content Security Policy and shows text only as
+  plain text.
+
+## Development
+
+```bash
+cd src-tauri
+cargo test --workspace
+```
+
+Open `src/index.html` in a browser to work on the animations without Tauri
+(keys 1–6 cycle states). [CLAUDE.md](CLAUDE.md) describes the architecture.
+
+## Credits
+
+- Original app: [zvoque/sidecrab](https://github.com/zvoque/sidecrab).
+- Activity detection design and walk-cycle frames:
+  [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar).
+  See [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
+- Built with [Tauri](https://tauri.app). MIT licensed, see [LICENSE](LICENSE).
 
 ## Trademark & IP
 
@@ -78,11 +151,3 @@ by, or sponsored by Anthropic. "Claude", "Clawd", and the Clawd crab design are
 Anthropic's trademarks and intellectual property, referenced here nominatively.
 The sprite frames derive from Anthropic's Clawd artwork, by way of
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar).
-
-The MIT license covers the **source code only** and conveys no rights to
-Anthropic's trademarks, brand, or artwork (see the scope note in
-[LICENSE](LICENSE)).
-
-Violating or impeding your trademark or copyright? Open an issue or reach me on X
-([@zvoque](https://x.com/zvoque)) and it'll be sorted promptly. Free side
-project, not monetized.

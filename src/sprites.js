@@ -188,7 +188,10 @@ export class SpriteRenderer {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this._fit();
-    window.addEventListener("resize", () => this._fit());
+    window.addEventListener("resize", () => {
+      this._fit();
+      this._kick();
+    });
     this.anim = "rest";
     this.step = 0;
     this.facing = 1; // 1 = natural, -1 = flipped
@@ -201,6 +204,7 @@ export class SpriteRenderer {
 
     this.images = WALK_PNGS.map((src) => {
       const img = new Image();
+      img.onload = () => this._kick(); // the loop may be asleep on a long step
       img.src = src;
       return img;
     });
@@ -215,21 +219,25 @@ export class SpriteRenderer {
     this.step = 0;
     this._acc = 0;
     this._onFinish = onFinish;
+    this._kick();
   }
 
   setFacing(dir) {
     this.facing = dir === "left" ? -1 : 1;
+    this._kick();
   }
 
   setHat(name) {
     this.hat = HATS[name] || HATS[name + "0"] ? name : null;
     if (name === "none") this.hat = null;
+    this._kick();
   }
 
   /// Persistent thought bubble (thinking state) — drawn over any pose, phase
   /// driven by wall-clock so it keeps typing "…" through hover or travel.
   setThought(on) {
     this._thought = !!on;
+    this._kick();
   }
 
   /// Head anchor for a frame: topmost row containing a horizontal opaque run
@@ -274,9 +282,34 @@ export class SpriteRenderer {
   }
 
   start() {
-    if (this._raf) return;
+    if (this._started) return;
+    this._started = true;
     this._last = performance.now();
     this._raf = requestAnimationFrame(this._loop);
+  }
+
+  /// Something visible changed from outside: render on the next frame instead
+  /// of waiting for the scheduled wake-up.
+  _kick() {
+    if (!this._started) return;
+    clearTimeout(this._timer);
+    this._timer = null;
+    if (!this._raf) this._raf = requestAnimationFrame(this._loop);
+  }
+
+  /// Sleep until the next moment the picture can change (end of the current
+  /// step, a blink edge, the heli rotor or thought-bubble tick) instead of
+  /// waking WebView2 on every monitor refresh.
+  _nextDelay() {
+    const s = SPRITES[this.anim].steps[this.step];
+    let d = s.ms - this._acc;
+    if (!s.blink && !s.squint && !s.halfEyes && !s.eyesDx && this._nextBlink != null) {
+      const edge = this._t <= this._nextBlink ? this._nextBlink : this._nextBlink + 140;
+      if (edge > this._t) d = Math.min(d, edge - this._t);
+    }
+    if (this.hat === "heli") d = Math.min(d, 130 - (this._t % 130));
+    if (this._thought) d = Math.min(d, 450 - (this._t % 450));
+    return Number.isFinite(d) ? Math.max(0, d) : 1000;
   }
 
   /// Eye data for a frame, cached: dark opaque pixels (incl. any halo) with the
@@ -342,16 +375,60 @@ export class SpriteRenderer {
           this.step = (this.step + 1) % a.steps.length;
         }
       }
-      this._draw();
+      // Redraw only when something visible changed: rAF runs at the monitor's
+      // refresh rate, but a frame here changes a few times a second. Repainting
+      // an unchanged canvas kept WebView2's renderer + GPU busy (~30% of a core).
+      const s = SPRITES[this.anim].steps[this.step];
+      const blink = this._blinkNow(s);
+      const img = this.images[s.i];
+      const key = [
+        this.anim, this.step, this.facing, this.hat,
+        this.hat === "heli" ? Math.floor(this._t / 130) % 2 : 0,
+        blink,
+        this._thought ? Math.floor(this._t / 450) % 4 : -1,
+        this.canvas.width, this.canvas.height,
+        img.complete && img.naturalWidth > 0,
+      ].join("|");
+      if (key !== this._drawnKey) {
+        this._draw(blink);
+        this._drawnKey = key;
+      }
     } catch (err) {
       console.error("render loop error", err);
       this.anim = "rest";
       this.step = 0;
     }
-    this._raf = requestAnimationFrame(this._loop);
+    // Re-queue unconditionally; a broken delay must never freeze the pet.
+    this._raf = null;
+    let delay = 1000;
+    try {
+      delay = this._nextDelay();
+    } catch (err) {
+      console.error("render schedule error", err);
+    }
+    if (delay <= 20) {
+      this._raf = requestAnimationFrame(this._loop);
+    } else {
+      this._timer = setTimeout(() => {
+        this._timer = null;
+        this._raf = requestAnimationFrame(this._loop);
+      }, delay - 8); // land on the frame just before the change is due
+    }
   }
 
-  _draw() {
+  /// Ambient blink: every few seconds on ANY animation (skipped when the step
+  /// already manipulates the eyes) — keeps him alive while working/thinking.
+  _blinkNow(s) {
+    if (s.blink) return true;
+    if (s.squint || s.halfEyes || s.eyesDx) return false;
+    this._nextBlink ??= this._t + 2000;
+    if (this._t <= this._nextBlink) return false;
+    if (this._t < this._nextBlink + 140) return true;
+    this._nextBlink = this._t + 3500 + Math.random() * 5500;
+    return false;
+  }
+
+  _draw(blink) {
     const ctx = this.ctx;
     const s = SPRITES[this.anim].steps[this.step];
     const img = this.images[s.i];
@@ -370,16 +447,6 @@ export class SpriteRenderer {
     // Inside the flip, so a mirrored frame is shifted the mirrored way.
     ctx.translate(FRAME_DX[s.i] || 0, 0);
     ctx.drawImage(img, 0, y);
-    // Ambient blink: every few seconds on ANY animation (skipped when the step
-    // already manipulates the eyes) — keeps him alive while working/thinking.
-    let blink = !!s.blink;
-    if (!blink && !s.squint && !s.halfEyes && !s.eyesDx) {
-      this._nextBlink ??= this._t + 2000;
-      if (this._t > this._nextBlink) {
-        if (this._t < this._nextBlink + 140) blink = true;
-        else this._nextBlink = this._t + 3500 + Math.random() * 5500;
-      }
-    }
     if (blink || s.squint || s.halfEyes) {
       const eyes = this._eyeData(s.i);
       for (const p of eyes?.mask || []) {
