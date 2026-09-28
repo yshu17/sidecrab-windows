@@ -32,7 +32,7 @@ Windows fork of [zvoque/sidecrab](https://github.com/zvoque/sidecrab) (macOS).
 <img src="docs/img/desktop.gif" alt="Sidecrab working at his laptop with the status bar under him">
 </div>
 
-Captured from the real app: the crab at his laptop, and the status bar under him.
+Captured from the real app at Medium size, no hat: the crab at his laptop and the status bar under him.
 
 ## What this fork adds
 
@@ -73,8 +73,21 @@ Turn the mini plate on or off with **Compact status bar** in the right-click men
 | **Double-click** | focuses the app running your session |
 | **Right-click** | opens settings |
 
-The right-click menu has size, position, hats, **Wander when idle**, compact
-status bar, **Launch at login**, **Refresh usage** and **Check for Updates…**.
+### Right-click menu
+
+<img src="docs/img/context-menu.png" width="240" alt="Sidecrab right-click menu">
+
+| Item | What it does |
+|---|---|
+| **Size** | Small, Medium or Large |
+| **Position** | snap to a corner, or reset |
+| **Hat** | none, top hat, chef's hat, fedora, helicopter hat |
+| **Wander when idle** | short strolls when you are away |
+| **Compact status bar** | mini plate that expands on hover |
+| **Launch at login** | start with Windows |
+| **Refresh usage** | re-read the 5-hour limit now |
+| **Check for Updates…** | look for a newer release here |
+| **Quit Sidecrab** | close the pet (`Ctrl+Q`) |
 
 ## Hats
 
