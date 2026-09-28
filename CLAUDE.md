@@ -39,6 +39,7 @@ There are two processes and they communicate only through files:
    - `os_actions.rs` holds the Tauri commands the webview invokes.
    - `hook_installer.rs` merges the hook entries into `~/.claude/settings.json`: backup once, additive, idempotent. Entries are identified by the `sidecrab-hook` marker substring.
    - `idle_monitor.rs` detects user idleness for wander mode.
+   - `topmost.rs` (Windows) keeps the pet above ordinary windows. `alwaysOnTop` is applied only at creation, and Windows can later stack normal windows (e.g. the Claude desktop app, Chrome) above the pet while it keeps WS_EX_TOPMOST. Every 500 ms, if any visible *non-topmost* window is above it, it re-asserts `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)`. It ignores other topmost windows (menus, overlays, other always-on-top apps), so it never fights them or steals focus.
 3. **The frontend** (`src/`, plain ES modules, no bundler, `frontendDist: ../src`):
    - `state-machine.js` maps feed states (`idle|thinking|tool|permission|done`) to animations and runs the idle micro-life/sleep scheduler.
    - `behavior.js` runs wander and cursor chase.

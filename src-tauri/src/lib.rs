@@ -7,6 +7,7 @@ pub mod os_actions;
 pub mod paths;
 pub mod sessions;
 pub mod state_watcher;
+pub mod topmost;
 pub mod usage_api;
 pub mod usage_cache;
 
@@ -469,6 +470,7 @@ pub fn run() {
             usage_api::spawn();
             usage_api::spawn_desktop_history();
             spawn_click_through_poller(app.handle().clone());
+            topmost::spawn(app.handle().clone());
             idle_monitor::spawn(app.handle().clone());
             // Pre-rename hook entries point at a binary that no longer exists —
             // reinstall silently (consent was already given for those hooks).
