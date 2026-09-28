@@ -8,6 +8,7 @@ pub mod paths;
 pub mod sessions;
 pub mod state_watcher;
 pub mod topmost;
+pub mod updates;
 pub mod usage_api;
 pub mod usage_cache;
 
@@ -15,51 +16,6 @@ use std::sync::Mutex;
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
-
-/// Brew-first update check: compare the newest GitHub tag against this build
-/// and point the user at `brew upgrade` (no in-app installer).
-const UPGRADE_CMD: &str = if cfg!(windows) { "sidecrab-update (rebuild from source)" } else { "brew upgrade sidecrab" };
-
-fn check_for_updates(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let current = app.package_info().version.to_string();
-        let mut cmd = std::process::Command::new("curl");
-        cmd.args(["-s", "--max-time", "10", "https://api.github.com/repos/zvoque/sidecrab/tags"]);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-        let latest = cmd
-            .output()
-            .ok()
-            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-            .and_then(|v| v[0]["name"].as_str().map(|s| s.trim_start_matches('v').to_string()));
-        match latest {
-            Some(l) if l != current => {
-                app.dialog()
-                    .message(format!(
-                        "Version {l} is available (you have {current}).\n\nUpdate with:\n  {UPGRADE_CMD}"
-                    ))
-                    .title("Update available")
-                    .buttons(MessageDialogButtons::Ok)
-                    .show(|_| {});
-            }
-            Some(_) => {
-                app.dialog()
-                    .message("You're on the latest version.")
-                    .title("No updates")
-                    .show(|_| {});
-            }
-            None => {
-                app.dialog()
-                    .message(format!("Couldn't reach GitHub to check. Try: {UPGRADE_CMD}"))
-                    .title("Update check failed")
-                    .show(|_| {});
-            }
-        }
-    });
-}
 
 const CONSENT_TEXT: &str = "To react to Claude Code activity, Sidecrab adds hooks to \
 ~/.claude/settings.json.\n\nYour file is backed up to settings.json.bak first, existing \
@@ -284,7 +240,7 @@ fn on_menu(app: &AppHandle, id: &str) {
             let _ = os_actions::hooks_remove();
         }
         "usage-refresh" => usage_api::request_refresh(),
-        "update-check" => check_for_updates(app.clone()),
+        "update-check" => updates::check(app.clone()),
         "quit" => app.exit(0),
         _ => {}
     }

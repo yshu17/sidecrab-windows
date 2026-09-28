@@ -1,6 +1,6 @@
 [package]
 name = "sidecrab"
-version = "0.1.0"
+version = "0.1.18"
 description = "Desktop pet crab that reacts to Claude Code activity"
 authors = ["zvoque"]
 edition = "2021"

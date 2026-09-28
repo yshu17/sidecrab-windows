@@ -18,18 +18,36 @@ const POLL: Duration = Duration::from_secs(2);
 /// rides out the desktop app restarting (auto-update) and /clear's end-then-start.
 const CLAUDE_GONE_GRACE: Duration = Duration::from_secs(15);
 
-/// How long Claude has been continuously absent.
-#[derive(Default)]
-pub struct Absence(Option<Instant>);
+/// When a plugin-launched pet quits: only once armed (`--plugin`), only after
+/// Claude was seen since the last (re)arm, and only after Claude has stayed
+/// gone for the whole grace period — a brief gap never quits.
+pub struct ExitWatch {
+    grace: Duration,
+    armed: bool,
+    seen: bool,
+    gone_since: Option<Instant>,
+}
 
-impl Absence {
-    /// Record one observation; true once Claude has been absent for `grace`.
-    pub fn gone_for(&mut self, present: bool, now: Instant, grace: Duration) -> bool {
-        if present {
-            self.0 = None;
+impl ExitWatch {
+    pub fn new(grace: Duration) -> Self {
+        Self { grace, armed: false, seen: false, gone_since: None }
+    }
+
+    /// A `--plugin` launch: quit with Claude, but wait to see Claude again first.
+    pub fn arm(&mut self) {
+        self.armed = true;
+        self.seen = false;
+    }
+
+    /// One poll. Returns true when the pet should quit now.
+    pub fn observe(&mut self, claude_up: bool, now: Instant) -> bool {
+        if claude_up {
+            self.seen = true;
+            self.gone_since = None;
             return false;
         }
-        now.duration_since(*self.0.get_or_insert(now)) >= grace
+        let since = *self.gone_since.get_or_insert(now);
+        self.armed && self.seen && now.duration_since(since) >= self.grace
     }
 }
 
@@ -109,11 +127,10 @@ pub fn spawn(app: AppHandle) {
     std::thread::spawn(move || {
         let dir = sessions_dir();
         let mut last = Value::Null;
-        let mut seen = false; // Claude observed since (re)arming
-        let mut absence = Absence::default();
+        let mut watch = ExitWatch::new(CLAUDE_GONE_GRACE);
         loop {
-            if REARM.swap(false, Ordering::SeqCst) {
-                seen = false;
+            if REARM.swap(false, Ordering::SeqCst) && EXIT_WITH_CLAUDE.load(Ordering::SeqCst) {
+                watch.arm();
             }
             let live = scan(&dir, claude_proc::is_alive);
             // On Windows an empty sessions.d does not mean Claude is closed: the
@@ -121,9 +138,7 @@ pub fn spawn(app: AppHandle) {
             // which prunes records until that session's next hook. Only the
             // absence of every claude.exe — desktop app or CLI — counts.
             let claude_up = if cfg!(windows) { claude_proc::any_running() } else { !live.is_empty() };
-            seen |= claude_up;
-            let gone = absence.gone_for(claude_up, Instant::now(), CLAUDE_GONE_GRACE);
-            if EXIT_WITH_CLAUDE.load(Ordering::SeqCst) && seen && gone {
+            if watch.observe(claude_up, Instant::now()) {
                 // Claude is gone. Exiting the process tears down the webview
                 // (its timers/listeners) and every poller thread.
                 app.exit(0);

@@ -1,101 +1,78 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-Sidecrab is a Tauri 2 desktop pet (pixel crab) that reacts to Claude Code activity. Upstream (zvoque/sidecrab) is macOS-only and ships via `brew install zvoque/tap/sidecrab`. The local `windows` branch adds Windows support and a Claude Code plugin mode.
+Sidecrab: a Tauri 2 desktop pet (pixel crab) that reacts to Claude Code activity. Upstream `zvoque/sidecrab` is macOS-only (brew). This fork (`whorlyknows/sidecrab-windows`, working branch `windows`) adds Windows support and a Claude Code plugin mode.
 
 ## Commands
 
-All Rust commands run from `src-tauri/`, which is a Cargo workspace containing the app crate (`sidecrab`) and the hook crate (`hook/`, package `sidecrab-hook`).
+Rust runs from `src-tauri/` (Cargo workspace: app crate `sidecrab` + hook crate `hook/`, package `sidecrab-hook`).
 
 ```bash
-cargo test --workspace                     # all tests
-cargo test --test installer                # one integration test file (tests/installer.rs)
-cargo test -p sidecrab-hook                # hook binary tests (hook/tests/hook.rs)
-cargo test --test config round_trips       # filter by test name
-cargo test --test sessions                 # session liveness / pruning
+cargo test --workspace                          # everything
+cargo test --test sessions                      # one file in tests/ (also: topmost, updates, installer, config, ...)
+cargo test -p sidecrab-hook                     # hook tests (hook/tests/hook.rs)
+cargo test --test updates -- --ignored          # live GitHub release check (network)
 ```
 
-Build (the hook sidecar must exist before `tauri build`, because tauri-build validates `externalBin`):
+Windows build + install: `install-windows.ps1` builds both binaries, installs them to `%LOCALAPPDATA%\Programs\sidecrab` (on PATH), writes `sidecrab-update.cmd` (fast-forward `git pull` if the branch tracks a remote, then rerun the script), copies them into `plugin/bin`, and runs `claude plugin marketplace update local` + `claude plugin update sidecrab@local` when `claude` is on PATH.
+macOS/manual: `npm run sidecar` (hook must exist before `tauri build` — tauri-build validates `externalBin`), then `npx tauri build` (`--no-bundle` on Windows).
 
-```bash
-npm run sidecar        # builds sidecrab-hook, copies it to src-tauri/binaries/sidecrab-hook-<host-triple>
-npx tauri build        # macOS bundle (app/dmg)
-npx tauri build --no-bundle   # Windows: plain exe, no installer
-```
+Frontend without Tauri: open `src/index.html` in a browser; keys 1-6 cycle states.
 
-On Windows, `install-windows.ps1` does the whole thing: it builds both binaries, installs them to `%LOCALAPPDATA%\Programs\sidecrab` (added to the user PATH), writes `sidecrab-update.cmd`, and syncs the binaries into `plugin/bin`.
+## Versions, releases, update check
 
-Frontend art iteration without Tauri: open `src/index.html` in a browser. Keys 1-6 cycle the states (`main.js` detects the missing `window.__TAURI__`).
+- One version everywhere: `src-tauri/tauri.conf.json` (the version the app reports), `src-tauri/Cargo.toml`, `src-tauri/hook/Cargo.toml`, `plugin/.claude-plugin/plugin.json`. `tests/updates.rs` fails if they drift. Bump all four together — Claude Code caches plugins by version and ignores rebuilt binaries otherwise.
+- "Check for Updates…" (`updates.rs`) reads `GET /repos/whorlyknows/sidecrab-windows/releases/latest`, takes the first dotted number in `tag_name` (`Alpha0.1` → 0.1, `v0.1.18` → 0.1.18), and offers the release page only if it is strictly newer. Tag new releases with the version (e.g. `v0.1.18`), or older-numbered tags will never show as updates. Nothing is downloaded in-app.
 
 ## Architecture
 
-There are two processes and they communicate only through files:
+Two processes, talking only through files under `SIDECRAB_HOME` (default `%APPDATA%\sidecrab` / `dirs::config_dir()/sidecrab`):
 
-1. **`sidecrab-hook`** (`src-tauri/hook/src/main.rs`) is a standalone binary with no Tauri dependencies. Claude Code runs it for each hook event as `sidecrab-hook <prompt|pre|post|notify|permreq|stop|fail|start|end>`, with the event JSON on stdin. It atomically writes `state.json` and keeps `sessions.d/<session_id>` under `SIDECRAB_HOME` (default `dirs::config_dir()/sidecrab`, which is `%APPDATA%\sidecrab` on Windows). It lives in its own crate so it builds fast and avoids the externalBin chicken-and-egg.
-2. **The app** (`src-tauri/src/`):
-   - `state_watcher.rs` watches the state *directory*, not the file, because tmp+rename replaces the inode. It emits `claude-state` to the webview.
-   - `lib.rs` owns the setup, the right-click settings menu, the consent dialog, and the click-through poller. The poller toggles `set_ignore_cursor_events` using the opaque sprite rect that the frontend pushes.
-   - `os_actions.rs` holds the Tauri commands the webview invokes.
-   - `hook_installer.rs` merges the hook entries into `~/.claude/settings.json`: backup once, additive, idempotent. Entries are identified by the `sidecrab-hook` marker substring.
-   - `idle_monitor.rs` detects user idleness for wander mode.
-   - `topmost.rs` (Windows) keeps the pet above ordinary windows. `alwaysOnTop` is applied only at creation, and Windows can later stack normal windows (e.g. the Claude desktop app, Chrome) above the pet while it keeps WS_EX_TOPMOST. Every 500 ms, if any visible *non-topmost* window is above it, it re-asserts `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)`. It ignores other topmost windows (menus, overlays, other always-on-top apps), so it never fights them or steals focus.
-3. **The frontend** (`src/`, plain ES modules, no bundler, `frontendDist: ../src`):
-   - `state-machine.js` maps feed states (`idle|thinking|tool|permission|done`) to animations and runs the idle micro-life/sleep scheduler.
-   - `behavior.js` runs wander and cursor chase.
-   - `input.js` handles drag, double-click to activate the host app, and right-click to open the menu.
-   - `sprites.js`/`frames.js` hold the pixel frames.
+1. **`sidecrab-hook`** (`hook/src/main.rs`, no Tauri deps): Claude Code runs `sidecrab-hook <prompt|pre|post|notify|permreq|stop|fail|start|end|statusline>` with event JSON on stdin. Writes `state.json` atomically and `sessions.d/<session_id>`. Local disk I/O only, never network.
+2. **App** (`src/*.rs`): `state_watcher.rs` watches the state *directory* (tmp+rename replaces the inode) and emits `claude-state`; `lib.rs` has setup, right-click menu, consent dialog and the 60 ms cursor poller (click-through via the opaque sprite rect, `crab-hover`, `status-hover`); `os_actions.rs` holds webview commands; `hook_installer.rs` merges hooks into `~/.claude/settings.json` (backup once, additive, idempotent, marker `sidecrab-hook`); `idle_monitor.rs` idleness for wander; `topmost.rs` keeps the pet on top (below).
+3. **Frontend** (`src/`, plain ES modules, no bundler): `state-machine.js` maps `idle|thinking|tool|permission|done` to animations and runs micro-life/sleep; `sprites.js` draws `frames.js` (29 frames, 51×36, base64 PNG) on a canvas; `behavior.js` wander/chase; `input.js` drag, double-click, right-click; `status.js` the status panel. Rust never draws — it only sends events.
 
-**Status panel.** A fixed-size, always-visible 3-row panel under the crab (`#status` in `index.html`, `src/status.js`; `STATUS_H` in `os_actions.rs` must match the CSS height): dot + activity/model + `tokens/window`, a context meter (`CTX 34k/200k 17%`), and a 5-hour meter with the local reset clock time (`5H 63% RESET 14:30`). Values show `--` until data arrives. Data is hybrid:
-- Dot and activity come from hook events. Green means thinking/tool, yellow permission, red `error` (StopFailure) or 10 min without events while working, grey idle.
-- Context tokens and model live in the session's `sessions.d` record. `sidecrab-hook statusline` fills it in terminal sessions (the `statusLine` command in `~/.claude/settings.json`; plugins cannot ship one). The desktop app never runs a statusLine, so hook events read the latest main-chain `usage` from `transcript_path`. That fallback is skipped once a statusLine has fed the session. Tokens are input-side only, matching `used_percentage`. The window size is 1M except Haiku (200K).
-- The 5-hour limit is in `limits.json` (the live transport; watcher emits `claude-limits`). Writers, in order of precision: `usage_api.rs` (OAuth usage endpoint: fetched at startup, right after the window's reset time, on the "Refresh usage" menu item, else every 30 min; a 429 `Retry-After` is honoured and persisted in `usage_api.json`; on failure the last limits are kept and flagged `stale`; token read from `~/.claude/.credentials.json` per request and passed to curl via stdin), the terminal statusLine, and `usage_api::spawn_desktop_history`, which reads the desktop app's own samples (`%APPDATA%\Claude\plan-usage-history.json`, `{t, u:{fh, sd}}` every ~15 min): exact percentage, reset time estimated from the window's first sample (`estimated: true`, shown `~14:30`). Within a window whose reset time a precise source gave, the desktop samples only refresh the percentage.
-- `usage_cache.rs` persists last-known values in `usage_cache.json` (fiveHourUsed/Remaining/ResetTime/Stale/Updated, contextUsed/Max/Percentage, model, lastUpdated), updated by the limits watcher and the sessions poller. It is a fast-start and fallback only, never the source of truth (5h usage also moves with other sessions/devices): `status_snapshot` returns it, `status.js` shows it instantly at startup and draws anything not confirmed by a live source dimmed with a trailing `?`. A cached 5h window past its reset time shows `--`.
+`paths::home()` (app) and `home()` (hook) are duplicated on purpose; keep them in sync. `claude_proc.rs` and `debug_log.rs` are shared into the hook crate via `#[path]`.
 
-The webview pulls `status_snapshot` once its listeners are attached, because events emitted before that are lost.
+**Status panel** (`#status`, `status.js`; `STATUS_H` in `os_actions.rs` must match the CSS height): activity dot + model + tokens, context meter, 5-hour meter with local reset time; `--` until data arrives.
+- Activity: hook events (green thinking/tool, yellow permission, red error or 10 min silent while working, grey idle).
+- Context/model: the session's `sessions.d` record — from `sidecrab-hook statusline` in terminals, else from the latest `usage` in `transcript_path` (desktop app has no statusLine). Input-side tokens; window 1M except Haiku (200K).
+- 5-hour limit: `limits.json` (watcher emits `claude-limits`). Sources by precision: `usage_api.rs` (OAuth endpoint; at startup, after reset, on "Refresh usage", else every 30 min; honours and persists 429 `Retry-After`; keeps last value flagged `stale` on failure; token from `~/.claude/.credentials.json`, passed to curl via stdin), the terminal statusLine, and the desktop app's `%APPDATA%\Claude\plan-usage-history.json` (exact %, reset time estimated, shown `~14:30`).
+- `usage_cache.rs` → `usage_cache.json`: fast start/fallback only, never truth; unconfirmed values are drawn dimmed with `?`. The webview pulls `status_snapshot` after attaching listeners (earlier events are lost).
+- Compact mode (`Config.compact_status`, default on; old key `autoHideStatus` accepted): collapses to a mini plate that grows from the centre on hover. Hover comes from the Rust poller because the panel is click-through. `config.json` is read with a UTF-8 BOM stripped (a rejected file resets all settings).
 
-**Compact mode.** `Config.compact_status` (default on; menu item "Compact status bar"; the older `autoHideStatus` key is read as an alias; event `status-compact-changed`) makes `status.js` set `data-mini` on `#status`: the panel collapses into a mini plate (dot, first word of the model, three activity pixels) centred at the top of the strip, and grows back out of it on hover. The frame is drawn by `#status::before` so it can `scale()` from the horizontal centre (stepped timing, ~180 ms) without squashing the text; `--kx/--ky` (set by `fitFrame`) make the collapsed frame match the plate. The panel is click-through, so hover comes from the Rust cursor poller in `lib.rs`, which emits `status-hover` while the cursor is in the bottom `STATUS_H` of the window (every 60 ms, also while collapsed). It collapses 400 ms after the cursor leaves, shows the full panel for 3 s at startup, and collapses 0.5 s after the setting is switched on. The panel and plate are centred on the window; the laptop frames (24-26) are shifted by `FRAME_DX` in `sprites.js` so the crab's body is centred there in every pose. `config.json` is parsed with any UTF-8 BOM stripped: a rejected file would silently reset all settings.
+**Sessions and lifecycle** (`sessions.rs`, `claude_proc.rs`): the hook stamps each record with its nearest `claude.exe` ancestor (pid + creation time via ToolHelp, once per session). A 2 s poller deletes records whose process is gone (SessionEnd doesn't fire on kill/close) and emits `claude-sessions`. A `--plugin` launch arms `ExitWatch`: quit only after Claude was seen and then stayed gone for 15 s. On Windows "gone" = no `claude.exe` process at all (desktop app or CLI), **not** an empty `sessions.d` — the desktop app restarts its per-session `claude.exe --resume=<id>` on its own, which prunes records while Claude is still open. Elsewhere: no live records. A manual launch never quits with Claude.
 
-**Sessions and lifecycle** (`sessions.rs`, `claude_proc.rs`). Each `sessions.d/<session_id>` record is JSON. The hook stamps it with the nearest `claude.exe` ancestor (pid + creation time, found through ToolHelp). `sessions.rs` polls every 2 s: records whose process is gone are deleted, because SessionEnd does not fire on terminal close or kill. It emits `claude-sessions`. When launched with `--plugin` (or when a later `--plugin` launch is forwarded by single-instance), the pet exits once Claude has been seen and then stays gone for 15 s (`CLAUDE_GONE_GRACE`). On Windows "gone" means no `claude.exe` process at all — desktop app or CLI — not an empty `sessions.d`: the desktop app runs one `claude.exe --resume=<id>` per session and restarts it on its own (app restart/auto-update, resume), which prunes that record until the session's next hook, so judging by records made the pet quit while Claude was still open. Elsewhere it still means no live session records. A manual launch without `--plugin` is not bound to Claude. `claude_proc.rs` is compiled into the hook crate via `#[path]`. On non-Windows there is no owner pid, so records live until SessionEnd.
+**Always on top** (`topmost.rs`, Windows): `alwaysOnTop` is applied only at creation, and Windows can later stack normal windows (Claude desktop app, Chrome) above the pet while it keeps WS_EX_TOPMOST. Every 500 ms, if a visible *non-topmost* window is above it, `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)`. Other topmost windows (menus, overlays, always-on-top apps) are ignored so it never fights them or steals focus.
 
-`paths::home()` in the app and `home()` in the hook are intentionally duplicated. Keep them in sync.
+## Windows notes
 
-The hook records `TERM_PROGRAM` as `host`. `activate_host` uses `host` on double-click to focus the Claude/terminal window: it runs `open -a` on macOS and PowerShell `AppActivate` on Windows.
-
-## Platform notes (Windows branch)
-
-- Platform code is split by `#[cfg(windows)]` / `cfg!(target_os = "macos")`: idle time comes from `GetLastInputInfo` (via `windows-sys`) and from `ioreg` on macOS. The app menu bar is set only on macOS, because on Windows it would attach to the crab window.
-- The hook command path written to `settings.json` uses forward slashes and strips the `\\?\` verbatim prefix. Claude Code runs Windows hooks through Git Bash.
-- Child processes (`curl`, `powershell`) use `CREATE_NO_WINDOW`, because the release exe uses the `windows` subsystem.
-- `main.rs` re-spawns itself detached with `--foreground` and forwards the original args.
-
-## Startup latency: keeping hooks non-blocking
-
-Nothing in this repo may make Claude Code's own request pipeline wait. What runs on the hook path per session/turn, and why it can't block:
-
-- **`SessionStart` runs two commands**: `sidecrab.exe --plugin` and `sidecrab-hook.exe start`. The former (`main.rs`) is not the GUI process — for a non-`--foreground` launch it only decides foreground-vs-background, spawns a detached child with `Stdio::null()`, prints one line, and returns; it never waits on that child, on the network, or on the child's window/Tauri init. All of that (window creation, `usage_api::spawn()`, `usage_api::spawn_desktop_history()`) happens later, inside the detached child, in background threads (`std::thread::spawn`), and in a separate OS process from whatever Claude Code itself is doing.
-- **`sidecrab-hook.exe`** (every event: `start`/`prompt`/`pre`/`post`/`notify`/`permreq`/`stop`/`fail`/`end`/`statusline`) does local disk I/O only — no network calls anywhere in that crate. `transcript_usage` seeks to the last 512 KB of the transcript instead of reading it whole. `claude_ancestor()` (a `CreateToolhelp32Snapshot` walk) runs at most once per session, the first time a session's record has no `claudePid` yet.
-- **The OAuth usage fetch** (`usage_api::fetch`, `curl --max-time 15`) only ever runs on a background thread (`usage_api::spawn`/`spawn_desktop_history`/`request_refresh`), never from `.setup()` or the main thread. A slow or failing endpoint (429, timeout, no credentials) leaves the last cached limits in place — see `usage_cache.rs` — and never delays anything the pet or Claude Code does.
-
-If a session still looks stuck right after opening (long "loading", the first message slow to send), that is very unlikely to be one of the above given the flow just described. Two remaining candidates that are outside this code:
-- **Antivirus real-time scanning** of `sidecrab.exe`/`sidecrab-hook.exe` — both are unsigned and rebuilt often during development, and Windows Defender (or third-party AV) can add a multi-second, one-time delay to the *first* launch of a binary after each rebuild while it scans. This lines up with "sometimes, mainly right after opening a session" better than anything above. Mitigation: add a Defender/AV exclusion for `%LOCALAPPDATA%\Programs\sidecrab` (not automated by `install-windows.ps1` — that would weaken the user's security posture without asking, so it's a manual step).
-- **Git Bash per hook**: Claude Code runs every Windows hook through Git Bash, so each of the many `PreToolUse`/`PostToolUse` events pays a fresh `bash.exe` startup. This adds up over a long session but doesn't explain a stall specifically at session open.
-
-**Diagnostics**: `debug_log.rs` (shared by the app and the hook via `#[path]`, like `claude_proc.rs`) is a no-op unless `SIDECRAB_DEBUG` is set — a single env-var read, so it costs nothing by default. Set `SIDECRAB_DEBUG=1` before launching `claude` for one session to get timestamped `<home>/debug.log` lines (never stdout — hook stdout can become Claude Code's hook "additionalContext") for: `launcher.main` (the exact process/line `SessionStart` runs and waits on), `hook.<event>` (every hook invocation, start+elapsed), `app.setup` (Tauri's own setup, irrelevant to Claude Code's timing but useful for correlation), and `usage_api.fetch` (OAuth request start/elapsed/outcome). Compare timestamps across `debug.log` and Claude Code's own session start time to see whether any of this repo's code is actually on the critical path.
+- Idle time: `GetLastInputInfo` (macOS: `ioreg`). App menu bar only on macOS.
+- Hook paths in `settings.json` use forward slashes without the `\\?\` prefix; Claude Code runs Windows hooks through Git Bash.
+- Child processes (`curl`, `powershell`) use `CREATE_NO_WINDOW` (release exe is `windows` subsystem).
+- `main.rs` re-spawns itself detached with `--foreground`, forwarding args.
 
 ## Plugin mode
 
-This repo is also a local Claude Code marketplace (`.claude-plugin/marketplace.json`, name `local`); the plugin `sidecrab@local` lives in `plugin/`. Its `hooks/hooks.json` calls `${CLAUDE_PLUGIN_ROOT}/bin/sidecrab-hook.exe` for every event. Do not also install hooks into `settings.json` while the plugin is enabled: every event would fire twice.
+This repo is a local marketplace (`.claude-plugin/marketplace.json`, name `local`); plugin `sidecrab@local` is `plugin/`, its hooks call `${CLAUDE_PLUGIN_ROOT}/bin/sidecrab-hook.exe`. Don't also install hooks into `settings.json` while the plugin is on (events fire twice).
 
-**Off by default; `/pet`/`/sidecrab` (`plugin/commands/`) are the only way to start it.** Sidecrab never auto-launches: `SessionStart` only runs `sidecrab-hook.exe start` (local disk I/O, no network — see the diagnostics paragraph above) plus a `tasklist`-guarded `sidecrab.exe --plugin` that does nothing unless Sidecrab is *already* running (see below). `/pet on` (or `/sidecrab on`) launches it; `/pet off` quits it entirely — no window, no background threads, no usage-API calls until turned on again; bare `/pet`/`/sidecrab` reports `Pet: ON`/`Pet: OFF` (`tasklist` for `sidecrab.exe`, the ground truth — no separate "enabled" flag is persisted, so a fresh boot/Claude Code install is OFF with no extra state to reset).
+**Off by default.** Only `/pet on` / `/sidecrab on` (`plugin/commands/`) start it; `/pet off` quits it fully (no threads, no usage calls); bare `/pet` reports ON/OFF via `tasklist` (no persisted flag). `SessionStart` runs `sidecrab-hook.exe start` plus a `tasklist`-guarded `sidecrab.exe --plugin`, so nothing is spawned while off.
 
-Three CLI flags on `sidecrab.exe`, all handled in the `tauri_plugin_single_instance` callback in `lib.rs` (fires only in the one already-running instance a second launch collides with, so none of them can ever start a duplicate):
-- `--show` (`/pet on`): raise and show the window, unconditionally (never hides — not a toggle).
-- `--quit` (`/pet off`): `app.exit(0)` on the real instance.
-- `--plugin` (SessionStart's re-arm, and `/pet on`): re-arms `sessions::exit_with_claude()` — the pet quits once every Claude Code session it's tracked (via `sessions.d`) has ended. Sets `Config.plugin_managed`, which suppresses the consent dialog and the install/remove-hooks menu item.
+CLI flags, handled in the `tauri_plugin_single_instance` callback (only in the already-running instance, so never a duplicate):
+- `--show`: raise/show the window (not a toggle).
+- `--quit`: exit.
+- `--plugin`: arm the quit-with-Claude watch; sets `Config.plugin_managed` (no consent dialog, no hooks menu item).
 
-`--plugin` and `--quit` presuppose an existing instance; sent to a *fresh* one (Sidecrab was off, or a race/stale check), `.setup()`'s very first lines detect this (no other instance was found to collide with) and call `app.handle().exit(0)` immediately, before any window is meaningfully used or a single background thread (usage API, watchers, pollers) starts — the only way to actually start Sidecrab is a bare launch (no flags) or `--show`. This is why `SessionStart`'s `sidecrab.exe --plugin` needs its own `tasklist` pre-check in `hooks.json` too: without it, every session start would still spawn (and instantly self-exit) a process — harmless, but needless work on Claude Code's own hook path.
+`--plugin`/`--quit` reaching a *fresh* process (pet was off) exit at the top of `.setup()` before any window or thread starts — only a bare launch or `--show` really starts Sidecrab.
 
-Claude Code caches plugins by version. After rebuilding, bump `version` in `plugin/.claude-plugin/plugin.json`, then run `claude plugin marketplace update local` and `claude plugin update sidecrab@local`.
+## Hook latency (Claude Code must never wait on us)
 
-The design spec is in `docs/superpowers/specs/2026-07-10-sidecrab-design.md` (state feed contract, animation states, window behavior, persistence).
+- `SessionStart`'s `sidecrab.exe --plugin` only decides foreground/background, spawns a detached child with null stdio and returns; all window/network work happens later in that child's background threads.
+- The hook does local disk I/O only; `transcript_usage` reads the last 512 KB; `claude_ancestor()` runs once per session.
+- `usage_api::fetch` (`curl --max-time 15`) only runs on background threads.
+- If a session still stalls at open, suspect antivirus scanning of freshly rebuilt unsigned exes (exclusion for `%LOCALAPPDATA%\Programs\sidecrab` is a manual, user-approved step) or Git Bash startup per hook.
+- Diagnostics: `SIDECRAB_DEBUG=1` → timestamped `<home>/debug.log` (never stdout — hook stdout becomes Claude Code context) for `launcher.main`, `hook.<event>`, `app.setup`, `usage_api.fetch`.
+
+## Elsewhere
+
+- `future/new-crab/`: planned redesigned pet (not wired in). Turn frames in `turn/`, rebuild GIFs/sheet with `py build_turn.py`; plan in its README.
+- Design spec: `docs/superpowers/specs/2026-07-10-sidecrab-design.md`.

@@ -1,22 +1,65 @@
 // sessions::scan decides which Claude Code sessions are alive — and therefore
 // whether a plugin-launched pet should quit.
 use serde_json::json;
-use sidecrab_lib::sessions::{scan, Absence};
+use sidecrab_lib::sessions::{scan, ExitWatch};
 use std::time::{Duration, Instant};
 
-#[test]
-fn absence_needs_the_full_grace_and_resets_when_claude_returns() {
-    let grace = Duration::from_secs(15);
+const GRACE: Duration = Duration::from_secs(15);
+
+fn clock() -> impl Fn(u64) -> Instant {
     let t0 = Instant::now();
-    let at = |s| t0 + Duration::from_secs(s);
-    let mut a = Absence::default();
-    assert!(!a.gone_for(true, at(0), grace));
-    assert!(!a.gone_for(false, at(2), grace), "a brief gap (app restart) must not quit");
-    assert!(!a.gone_for(false, at(16), grace));
-    assert!(!a.gone_for(true, at(17), grace), "Claude came back: timer resets");
-    assert!(!a.gone_for(false, at(20), grace));
-    assert!(!a.gone_for(false, at(34), grace));
-    assert!(a.gone_for(false, at(35), grace), "absent for the whole grace period: quit");
+    move |s| t0 + Duration::from_secs(s)
+}
+
+#[test]
+fn quits_only_after_claude_stays_gone_for_the_whole_grace() {
+    let at = clock();
+    let mut w = ExitWatch::new(GRACE);
+    w.arm();
+    assert!(!w.observe(true, at(0)));
+    assert!(!w.observe(false, at(2)), "a brief gap (desktop app restart) must not quit");
+    assert!(!w.observe(false, at(16)));
+    assert!(!w.observe(true, at(17)), "Claude came back: the timer resets");
+    assert!(!w.observe(false, at(20)));
+    assert!(!w.observe(false, at(34)));
+    assert!(w.observe(false, at(35)), "gone for the whole grace period: quit");
+}
+
+#[test]
+fn never_quits_unless_launched_by_the_plugin() {
+    let at = clock();
+    let mut w = ExitWatch::new(GRACE); // manual `sidecrab` launch: never armed
+    assert!(!w.observe(true, at(0)));
+    for s in (2..=120).step_by(2) {
+        assert!(!w.observe(false, at(s)), "unarmed pet quit at {s}s");
+    }
+}
+
+#[test]
+fn never_quits_before_claude_was_seen() {
+    let at = clock();
+    let mut w = ExitWatch::new(GRACE);
+    w.arm();
+    for s in (0..=60).step_by(2) {
+        assert!(!w.observe(false, at(s)), "quit at {s}s without ever seeing Claude");
+    }
+    assert!(!w.observe(true, at(62)));
+    assert!(!w.observe(false, at(64)));
+    assert!(w.observe(false, at(79)), "seen, then gone for the grace period: quit");
+}
+
+#[test]
+fn rearming_waits_for_claude_again() {
+    let at = clock();
+    let mut w = ExitWatch::new(GRACE);
+    w.arm();
+    assert!(!w.observe(true, at(0)));
+    assert!(!w.observe(false, at(2)));
+    w.arm(); // a new --plugin launch while Claude looks gone
+    assert!(!w.observe(false, at(40)), "re-armed: must see Claude first");
+    assert!(!w.observe(true, at(42)));
+    assert!(!w.observe(false, at(44)));
+    assert!(w.observe(false, at(59)), "seen after re-arm, then gone for the grace period: quit");
 }
 
 fn tmp_dir(name: &str) -> std::path::PathBuf {

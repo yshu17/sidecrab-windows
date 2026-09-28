@@ -80,7 +80,13 @@ mod imp {
     /// Any Claude process at all: the desktop app (Claude.exe) or a CLI.
     /// Errs on "running" if the process list can't be read.
     pub fn any_running() -> bool {
-        process_table().map_or(true, |t| t.values().any(|(_, n)| n.eq_ignore_ascii_case(CLAUDE_EXE)))
+        any_named(CLAUDE_EXE)
+    }
+
+    /// Any process with this exe name (case-insensitive). Errs on "running"
+    /// if the process list can't be read.
+    pub fn any_named(exe: &str) -> bool {
+        process_table().map_or(true, |t| t.values().any(|(_, n)| n.eq_ignore_ascii_case(exe)))
     }
 
     /// True while that exact process (same pid AND same creation time) runs.
@@ -118,3 +124,5 @@ mod imp {
 }
 
 pub use imp::{any_running, claude_ancestor, is_alive};
+#[cfg(windows)]
+pub use imp::any_named;
