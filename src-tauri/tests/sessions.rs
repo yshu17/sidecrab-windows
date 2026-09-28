@@ -1,7 +1,23 @@
 // sessions::scan decides which Claude Code sessions are alive — and therefore
 // whether a plugin-launched pet should quit.
 use serde_json::json;
-use sidecrab_lib::sessions::scan;
+use sidecrab_lib::sessions::{scan, Absence};
+use std::time::{Duration, Instant};
+
+#[test]
+fn absence_needs_the_full_grace_and_resets_when_claude_returns() {
+    let grace = Duration::from_secs(15);
+    let t0 = Instant::now();
+    let at = |s| t0 + Duration::from_secs(s);
+    let mut a = Absence::default();
+    assert!(!a.gone_for(true, at(0), grace));
+    assert!(!a.gone_for(false, at(2), grace), "a brief gap (app restart) must not quit");
+    assert!(!a.gone_for(false, at(16), grace));
+    assert!(!a.gone_for(true, at(17), grace), "Claude came back: timer resets");
+    assert!(!a.gone_for(false, at(20), grace));
+    assert!(!a.gone_for(false, at(34), grace));
+    assert!(a.gone_for(false, at(35), grace), "absent for the whole grace period: quit");
+}
 
 fn tmp_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("sidecrab-sessions-{name}-{}", std::process::id()));

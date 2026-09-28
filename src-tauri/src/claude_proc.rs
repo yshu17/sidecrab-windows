@@ -77,6 +77,12 @@ mod imp {
         None
     }
 
+    /// Any Claude process at all: the desktop app (Claude.exe) or a CLI.
+    /// Errs on "running" if the process list can't be read.
+    pub fn any_running() -> bool {
+        process_table().map_or(true, |t| t.values().any(|(_, n)| n.eq_ignore_ascii_case(CLAUDE_EXE)))
+    }
+
     /// True while that exact process (same pid AND same creation time) runs.
     pub fn is_alive((pid, start): ProcId) -> bool {
         unsafe {
@@ -105,6 +111,10 @@ mod imp {
     pub fn is_alive(_: ProcId) -> bool {
         true
     }
+
+    pub fn any_running() -> bool {
+        true
+    }
 }
 
-pub use imp::{claude_ancestor, is_alive};
+pub use imp::{any_running, claude_ancestor, is_alive};

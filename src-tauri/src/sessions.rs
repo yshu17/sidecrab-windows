@@ -10,10 +10,28 @@ use crate::claude_proc::{self, ProcId};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 const POLL: Duration = Duration::from_secs(2);
+/// How long Claude must be completely gone before a plugin-launched pet quits:
+/// rides out the desktop app restarting (auto-update) and /clear's end-then-start.
+const CLAUDE_GONE_GRACE: Duration = Duration::from_secs(15);
+
+/// How long Claude has been continuously absent.
+#[derive(Default)]
+pub struct Absence(Option<Instant>);
+
+impl Absence {
+    /// Record one observation; true once Claude has been absent for `grace`.
+    pub fn gone_for(&mut self, present: bool, now: Instant, grace: Duration) -> bool {
+        if present {
+            self.0 = None;
+            return false;
+        }
+        now.duration_since(*self.0.get_or_insert(now)) >= grace
+    }
+}
 
 /// Quit when the last session ends (set by a `--plugin` launch).
 static EXIT_WITH_CLAUDE: AtomicBool = AtomicBool::new(false);
@@ -91,16 +109,23 @@ pub fn spawn(app: AppHandle) {
     std::thread::spawn(move || {
         let dir = sessions_dir();
         let mut last = Value::Null;
-        let mut seen = false; // at least one session observed since (re)arming
+        let mut seen = false; // Claude observed since (re)arming
+        let mut absence = Absence::default();
         loop {
             if REARM.swap(false, Ordering::SeqCst) {
                 seen = false;
             }
             let live = scan(&dir, claude_proc::is_alive);
-            seen |= !live.is_empty();
-            if EXIT_WITH_CLAUDE.load(Ordering::SeqCst) && seen && live.is_empty() {
-                // Last Claude Code session is gone. Exiting the process tears down
-                // the webview (its timers/listeners) and every poller thread.
+            // On Windows an empty sessions.d does not mean Claude is closed: the
+            // desktop app restarts its per-session CLI processes (update, resume),
+            // which prunes records until that session's next hook. Only the
+            // absence of every claude.exe — desktop app or CLI — counts.
+            let claude_up = if cfg!(windows) { claude_proc::any_running() } else { !live.is_empty() };
+            seen |= claude_up;
+            let gone = absence.gone_for(claude_up, Instant::now(), CLAUDE_GONE_GRACE);
+            if EXIT_WITH_CLAUDE.load(Ordering::SeqCst) && seen && gone {
+                // Claude is gone. Exiting the process tears down the webview
+                // (its timers/listeners) and every poller thread.
                 app.exit(0);
                 return;
             }
