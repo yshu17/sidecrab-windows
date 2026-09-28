@@ -26,6 +26,14 @@ Windows fork of [zvoque/sidecrab](https://github.com/zvoque/sidecrab) (macOS).
 
 ...and a handful of other moods and moves he'll show you himself.
 
+## Live on your desktop
+
+<div align="center">
+<img src="docs/img/desktop.gif" alt="Sidecrab working at his laptop with the status bar under him">
+</div>
+
+Captured from the real app: the crab at his laptop, and the status bar under him.
+
 ## What this fork adds
 
 - **Windows build**: native Win32 idle detection, click-through outside the
@@ -39,6 +47,23 @@ Windows fork of [zvoque/sidecrab](https://github.com/zvoque/sidecrab) (macOS).
   expands on hover.
 - **Light on the machine**: the sprite is redrawn only when the picture
   changes, so an idle pet uses a few percent of one CPU core.
+
+## Status bar
+
+A small panel under the crab shows what Claude Code is doing right now.
+
+| | | |
+|:---:|:---:|:---:|
+| ![mini](docs/img/status-mini.png) | ![compact](docs/img/status-compact.png) | ![full](docs/img/status-full.png) |
+| **mini plate**: model and reset time. Grows on hover. | **compact**: context and 5-hour meters | **full**: also the token count |
+
+- **Dot**: green while Claude thinks or runs a tool, yellow when it waits for
+  your permission, red on an error or after 10 minutes of silence, grey when idle.
+- **CTX**: how full the context window is (1M tokens, 200K for Haiku).
+- **5H**: your 5-hour usage limit. `~14:30` marks an estimated reset time,
+  and a dimmed value with `?` is not confirmed yet.
+
+Turn the mini plate on or off with **Compact status bar** in the right-click menu.
 
 ## Interactions
 
