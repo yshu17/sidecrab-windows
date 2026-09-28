@@ -6,7 +6,7 @@ use tauri::AppHandle;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
 
-pub const REPO: &str = "whorlyknows/sidecrab-windows";
+pub const REPO: &str = "yshu17/sidecrab-windows";
 
 #[derive(Debug)]
 pub struct Release {
@@ -71,7 +71,10 @@ pub fn check(app: AppHandle) {
         let releases = format!("https://github.com/{REPO}/releases");
         let Some(latest) = fetch_latest() else {
             app.dialog()
-                .message(format!("Couldn't reach GitHub to check for updates.\n\nReleases: {releases}"))
+                .message(format!(
+                    "Couldn't read the latest release from GitHub (offline, no release yet, \
+                     or the repository is private).\n\nReleases: {releases}"
+                ))
                 .title("Update check failed")
                 .show(|_| {});
             return;

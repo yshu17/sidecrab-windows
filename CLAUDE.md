@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Sidecrab: a Tauri 2 desktop pet (pixel crab) that reacts to Claude Code activity. Upstream `zvoque/sidecrab` is macOS-only (brew). This fork (`whorlyknows/sidecrab-windows`, working branch `windows`) adds Windows support and a Claude Code plugin mode.
+Sidecrab: a Tauri 2 desktop pet (pixel crab) that reacts to Claude Code activity. Upstream `zvoque/sidecrab` is macOS-only (brew). This fork (`yshu17/sidecrab-windows`, private; branch `windows` tracks its `main`) adds Windows support and a Claude Code plugin mode.
 
 ## Commands
 
@@ -21,7 +21,7 @@ Frontend without Tauri: open `src/index.html` in a browser; keys 1-6 cycle state
 ## Versions, releases, update check
 
 - One version everywhere: `src-tauri/tauri.conf.json` (the version the app reports), `src-tauri/Cargo.toml`, `src-tauri/hook/Cargo.toml`, `plugin/.claude-plugin/plugin.json`. `tests/updates.rs` fails if they drift. Bump all four together — Claude Code caches plugins by version and ignores rebuilt binaries otherwise.
-- "Check for Updates…" (`updates.rs`) reads `GET /repos/whorlyknows/sidecrab-windows/releases/latest`, takes the first dotted number in `tag_name` (`Alpha0.1` → 0.1, `v0.1.18` → 0.1.18), and offers the release page only if it is strictly newer. Tag new releases with the version (e.g. `v0.1.18`), or older-numbered tags will never show as updates. Nothing is downloaded in-app.
+- "Check for Updates…" (`updates.rs`) reads `GET /repos/yshu17/sidecrab-windows/releases/latest`, takes the first dotted number in `tag_name` (`Alpha0.1` → 0.1, `v0.1.18` → 0.1.18), and offers the release page only if it is strictly newer. Tag new releases with the version (e.g. `v0.1.18`), or older-numbered tags will never show as updates. Nothing is downloaded in-app. The API is read without login, so the check only works while the repository is public; a private repo answers 404 ("Couldn't reach GitHub").
 
 ## Architecture
 

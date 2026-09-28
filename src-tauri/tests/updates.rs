@@ -29,7 +29,7 @@ fn latest_release_parsed_from_github_response() {
     let body = json!({
         "tag_name": "v0.1.18",
         "name": "0.1.18",
-        "html_url": "https://github.com/whorlyknows/sidecrab-windows/releases/tag/v0.1.18",
+        "html_url": "https://github.com/yshu17/sidecrab-windows/releases/tag/v0.1.18",
         "draft": false
     });
     let r = latest_release(&body).unwrap();
@@ -48,7 +48,7 @@ fn unusable_responses_are_rejected() {
 
 #[test]
 fn check_points_at_this_fork() {
-    assert_eq!(REPO, "whorlyknows/sidecrab-windows");
+    assert_eq!(REPO, "yshu17/sidecrab-windows");
 }
 
 /// Network: `cargo test --test updates -- --ignored`. Proves the real
