@@ -50,6 +50,8 @@ Two processes, talking only through files under `SIDECRAB_HOME` (default `%APPDA
 
 **Always on top** (`topmost.rs`, Windows): `alwaysOnTop` is applied only at creation, and Windows can later stack normal windows (Claude desktop app, Chrome) above the pet while it keeps WS_EX_TOPMOST. Every 500 ms, if a visible *non-topmost* window is above it, `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)`. Other topmost windows (menus, overlays, always-on-top apps) are ignored so it never fights them or steals focus.
 
+**Recovering from an invalid monitor** (`screen.rs`, `os_actions::is_stranded`/`recover_offscreen`): a saved position can predate the current display layout — most often a monitor that was connected when it was last saved is gone on wake from sleep (undocked laptop, unplugged projector). `screen::is_onscreen` (pure, unit-tested) checks the window rect against `available_monitors()`; the same 500 ms Windows poll that reasserts topmost also checks this first and, if the window isn't sufficiently on any monitor, snaps it to the bottom-right corner of the nearest one and re-persists that as home — leaving the stale one in place would just have the wander ticker's "walk home" drag it back off-screen. `setup()` runs the same check once before showing the window, so a stale saved position doesn't start the pet invisible either.
+
 ## Windows notes
 
 - Idle time: `GetLastInputInfo` (macOS: `ioreg`). App menu bar only on macOS.

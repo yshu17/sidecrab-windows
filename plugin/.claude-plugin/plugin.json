@@ -1,6 +1,6 @@
 {
   "name": "sidecrab",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "description": "Pixel crab desktop pet that reacts to Claude Code activity (Windows build)",
   "author": { "name": "zvoque (original), yshu17 (Windows fork)" },
   "license": "MIT"

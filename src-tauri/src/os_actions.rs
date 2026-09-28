@@ -1,6 +1,7 @@
 //! Tauri commands the webview invokes: window control, host activation, config.
 
 use crate::config::{self, Config};
+use crate::screen::{self, Rect};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 // Window logical sizes per setting. Height keeps the sprite's 51:48 aspect so the
@@ -64,6 +65,48 @@ pub fn place_corner(window: &WebviewWindow, corner: &str, persist: bool) {
         c.position = Some((x, y));
         let _ = config::save(&c);
     }
+}
+
+/// Least pixels of the window that must land on some monitor to count as
+/// found — small enough that a sliver at a screen edge still passes, large
+/// enough to ignore rounding noise.
+const MIN_VISIBLE_PX: i32 = 40;
+
+fn window_rect(window: &WebviewWindow) -> Option<Rect> {
+    let pos = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    Some(Rect { x: pos.x, y: pos.y, w: size.width as i32, h: size.height as i32 })
+}
+
+fn monitor_rects(window: &WebviewWindow) -> Vec<Rect> {
+    window
+        .available_monitors()
+        .map(|mons| {
+            mons.iter()
+                .map(|m| {
+                    let p = m.position();
+                    let s = m.size();
+                    Rect { x: p.x, y: p.y, w: s.width as i32, h: s.height as i32 }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// True when the window is not (sufficiently) on any currently connected
+/// monitor — most often because the monitor its saved spot was on is gone,
+/// discovered on waking from sleep with a different display layout.
+pub fn is_stranded(window: &WebviewWindow) -> bool {
+    let Some(win) = window_rect(window) else { return false }; // can't tell — don't act
+    let monitors = monitor_rects(window);
+    !monitors.is_empty() && !screen::is_onscreen(win, &monitors, MIN_VISIBLE_PX)
+}
+
+/// Snap a stranded window back onto a real monitor. Persists the new spot as
+/// home too: the stale one was off-screen, so leaving it in place would only
+/// have the "walk home" idle behavior drag the pet right back off-screen.
+pub fn recover_offscreen(window: &WebviewWindow) {
+    place_corner(window, "br", true);
 }
 
 

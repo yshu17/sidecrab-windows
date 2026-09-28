@@ -70,6 +70,13 @@ pub fn spawn(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_millis(500));
         let Some(win) = app.get_webview_window("main") else { continue };
+        // A monitor the pet's spot was on can vanish while the machine was
+        // asleep (undocked, a projector unplugged); recover before anything
+        // else — a window that's off-screen has nothing to raise or lower.
+        if crate::os_actions::is_stranded(&win) {
+            crate::os_actions::recover_offscreen(&win);
+            continue;
+        }
         let Ok(h) = win.hwnd() else { continue };
         // SAFETY: a live HWND of our own main window, fetched this iteration.
         unsafe { raise_if_covered(h.0 as _) };

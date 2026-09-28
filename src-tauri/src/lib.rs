@@ -5,6 +5,7 @@ pub mod hook_installer;
 pub mod idle_monitor;
 pub mod os_actions;
 pub mod paths;
+pub mod screen;
 pub mod sessions;
 pub mod state_watcher;
 pub mod topmost;
@@ -411,6 +412,12 @@ pub fn run() {
             match cfg.position {
                 Some((x, y)) => {
                     let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+                    // The saved spot can predate the current monitor layout (a
+                    // display unplugged since last run) — recover instead of
+                    // starting up invisible.
+                    if os_actions::is_stranded(&win) {
+                        os_actions::recover_offscreen(&win);
+                    }
                 }
                 None => {
                     // Default resting spot: bottom-right corner (not persisted — a
