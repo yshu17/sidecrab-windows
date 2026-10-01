@@ -219,9 +219,10 @@ export function attachStatus(el) {
     setRefresh(r) {
       clearTimeout(refreshTimer);
       const phase = r?.phase;
-      refreshNote = phase === "running" ? "…" : phase === "failed" ? "fail" : null;
+      // "login": the stored Claude Code login expired, nothing to refresh with.
+      refreshNote = phase === "running" ? "…" : phase === "failed" ? (r.login ? "login" : "fail") : null;
       // Running clears itself if no result ever arrives; "fail" shows briefly.
-      if (refreshNote) refreshTimer = setTimeout(() => { refreshNote = null; render(); }, phase === "running" ? 30_000 : 5_000);
+      if (refreshNote) refreshTimer = setTimeout(() => { refreshNote = null; render(); }, phase === "running" ? 30_000 : 8_000);
       render();
     },
     setCache(cache) {

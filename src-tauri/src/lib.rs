@@ -174,7 +174,16 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
     }
     menu
         .items(&[
-            &MenuItemBuilder::with_id("usage-refresh", "Refresh usage").build(app).ok()?,
+            &MenuItemBuilder::with_id(
+                "usage-refresh",
+                if usage_api::login_needed() {
+                    "Refresh usage (login expired: use Claude Code in a terminal)"
+                } else {
+                    "Refresh usage"
+                },
+            )
+            .build(app)
+            .ok()?,
             &MenuItemBuilder::with_id("update-check", "Check for Updates…").build(app).ok()?,
             &MenuItemBuilder::with_id("quit", "Quit Sidecrab")
                 .accelerator("CmdOrCtrl+Q")

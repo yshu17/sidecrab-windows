@@ -223,16 +223,23 @@ fn log(msg: &str) {
 }
 
 /// Tell the status bar how a manual refresh is going ("running"/"ok"/"failed").
-fn emit_refresh(phase: &str, detail: &str) {
+/// `login` = it failed because the stored Claude Code login is expired/missing.
+fn emit_refresh(phase: &str, detail: &str, login: bool) {
     if let Some(app) = APP.get() {
-        let _ = app.emit("usage-refresh", json!({ "phase": phase, "detail": detail }));
+        let _ = app.emit("usage-refresh", json!({ "phase": phase, "detail": detail, "login": login }));
     }
 }
 
-fn finish_manual(ok: bool, detail: &str) {
+fn finish_manual(ok: bool, detail: &str, login: bool) {
     log(&format!("manual refresh {}: {detail}", if ok { "done" } else { "failed" }));
-    emit_refresh(if ok { "ok" } else { "failed" }, detail);
+    emit_refresh(if ok { "ok" } else { "failed" }, detail, login);
     MANUAL_BUSY.store(false, Ordering::SeqCst);
+}
+
+/// True when OAuth can't run for lack of a usable stored login — the status
+/// bar then says "login" and the menu tells how to renew it.
+pub fn login_needed() -> bool {
+    !matches!(access_token(), Token::Ok(_))
 }
 
 /// Manual refresh (menu). Forces a request now, skipping our own schedule but
@@ -252,7 +259,7 @@ pub fn request_refresh() {
     LAST_MANUAL_MS.store(now, Ordering::SeqCst);
     MANUAL_BUSY.store(true, Ordering::SeqCst);
     log("manual refresh requested");
-    emit_refresh("running", "");
+    emit_refresh("running", "", false);
     *REFRESH.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
     REFRESH.1.notify_all();
 }
@@ -310,17 +317,19 @@ pub fn spawn(app: AppHandle) {
                     // Asking during a 429 block seems to extend it: refresh the
                     // local source only, and say how long the server wants.
                     sync_desktop_history();
-                    finish_manual(false, &format!("server asked to wait {}s more (HTTP 429)", gate.not_before - now));
+                    finish_manual(false, &format!("server asked to wait {}s more (HTTP 429)", gate.not_before - now), false);
                 }
                 manual = wait((gate.not_before - now).max(1) as u64);
                 continue;
             }
             log(&format!("oauth request started ({})", if manual { "manual" } else { "scheduled" }));
-            let result = match access_token() {
+            let token = access_token();
+            let login = !matches!(token, Token::Ok(_));
+            let result = match token {
                 Token::Ok(t) => fetch(&t),
                 Token::Missing => Fetch::Failed("no Claude Code login in ~/.claude/.credentials.json".into()),
                 Token::Expired => Fetch::Failed(
-                    "stored token expired (only the Claude Code CLI renews ~/.claude/.credentials.json)".into(),
+                    "stored login expired (renewed when Claude Code in a terminal next talks to the API)".into(),
                 ),
             };
             let mut server = false;
@@ -368,11 +377,11 @@ pub fn spawn(app: AppHandle) {
             save_gate(Gate { not_before: now + next as i64, server });
             if manual {
                 match outcome {
-                    Ok(msg) => finish_manual(true, &msg),
+                    Ok(msg) => finish_manual(true, &msg, false),
                     Err(why) => {
                         // OAuth failed: at least pick up the desktop app's latest sample now.
                         sync_desktop_history();
-                        finish_manual(false, &why);
+                        finish_manual(false, &why, login);
                     }
                 }
             }
