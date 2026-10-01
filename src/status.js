@@ -105,6 +105,10 @@ export function attachStatus(el) {
   let sessions = [];
   let limits = null; // live (limits.json)
   let cached = { limits: null, context: null };
+  // Manual "Refresh usage": a short note in the reset-time slot ("…" while
+  // running, "fail" after an error) instead of a popup; null = normal display.
+  let refreshNote = null;
+  let refreshTimer = null;
 
   // The frame collapses into (and grows out of) the mini plate: scale it to the
   // plate's size. offsetWidth is layout size, unaffected by the transforms.
@@ -156,7 +160,7 @@ export function attachStatus(el) {
     meter(lim, valid ? five.usedPercentage : null, valid && stale);
     // Reset time comes straight from the source's resetsAt (never computed here);
     // "~" marks the desktop-sample estimate, "--:--" = no live window.
-    const reset = valid ? (src.estimated ? "~" : "") + clockText(five.resetsAt) : "--:--";
+    const reset = refreshNote || (valid ? (src.estimated ? "~" : "") + clockText(five.resetsAt) : "--:--");
     resetRow.textContent = reset;
     resetRow.dataset.stale = valid && stale ? "1" : "";
     // The plate is as wide as its content: refit the collapsed frame when it changed.
@@ -210,6 +214,14 @@ export function attachStatus(el) {
     },
     setLimits(l) {
       limits = l && l.fiveHour ? l : null;
+      render();
+    },
+    setRefresh(r) {
+      clearTimeout(refreshTimer);
+      const phase = r?.phase;
+      refreshNote = phase === "running" ? "…" : phase === "failed" ? "fail" : null;
+      // Running clears itself if no result ever arrives; "fail" shows briefly.
+      if (refreshNote) refreshTimer = setTimeout(() => { refreshNote = null; render(); }, phase === "running" ? 30_000 : 5_000);
       render();
     },
     setCache(cache) {

@@ -31,6 +31,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     await listen("status-compact-changed", (e) => status.setCompact(e.payload));
     await listen("status-hover", (e) => status.setHover(e.payload));
     await listen("claude-limits", (e) => status.setLimits(e.payload));
+    await listen("usage-refresh", (e) => status.setRefresh(e.payload));
     await listen("claude-sessions", (e) => status.setSessions(e.payload));
     await listen("claude-state", (e) => {
       status.setState(e.payload);

@@ -73,3 +73,52 @@ fn history_stale_or_empty_rejected() {
     assert!(from_history(&json!({"samples": []}), 0).is_none());
     assert!(from_history(&json!({"nope": 1}), 0).is_none());
 }
+
+// --- Manual "Refresh usage" ---------------------------------------------------
+
+use sidecrab_lib::usage_api::{classify, manual_allowed, may_fetch, token_from, Fetch, Gate, Token, MANUAL_GAP_MS};
+
+#[test]
+fn manual_refresh_skips_our_own_schedule() {
+    // The bug: a fetch 1 min ago scheduled the next one 30 min out, and the
+    // menu's refresh was swallowed by that wait.
+    let gate = Gate { not_before: 1_000 + 30 * 60, server: false };
+    assert!(!may_fetch(1_000, gate, false), "scheduled loop still waits");
+    assert!(may_fetch(1_000, gate, true), "manual refresh goes out now");
+}
+
+#[test]
+fn manual_refresh_respects_server_retry_after() {
+    let gate = Gate { not_before: 1_000 + 600, server: true };
+    assert!(!may_fetch(1_000, gate, true));
+    assert!(may_fetch(1_600, gate, true));
+}
+
+#[test]
+fn repeated_presses_are_coalesced() {
+    let t = 1_000_000;
+    assert!(manual_allowed(t, 0, false));
+    assert!(!manual_allowed(t, 0, true), "one already running");
+    assert!(!manual_allowed(t + MANUAL_GAP_MS - 1, t, false), "too soon");
+    assert!(manual_allowed(t + MANUAL_GAP_MS, t, false));
+}
+
+#[test]
+fn token_states_are_told_apart() {
+    let now = 1_790_000_000_000;
+    let creds = |tok: &str, exp: i64| json!({ "claudeAiOauth": { "accessToken": tok, "expiresAt": exp } });
+    assert_eq!(token_from(&creds("abc", now + 60_000), now), Token::Ok("abc".into()));
+    assert_eq!(token_from(&creds("abc", now - 1), now), Token::Expired);
+    assert_eq!(token_from(&creds("abc", 0), now), Token::Ok("abc".into()), "0 = refresh managed elsewhere");
+    assert_eq!(token_from(&creds("", now + 60_000), now), Token::Missing);
+    assert_eq!(token_from(&json!({}), now), Token::Missing);
+}
+
+#[test]
+fn http_outcomes_carry_a_reason() {
+    assert!(matches!(classify(r#"{"five_hour":{}}"#, "200 "), Fetch::Ok(_)));
+    assert!(matches!(classify("", "429 120"), Fetch::RetryAfter(120)));
+    assert!(matches!(classify("", "401 "), Fetch::Failed(r) if r == "HTTP 401"));
+    assert!(matches!(classify("", "000 "), Fetch::Failed(r) if r.contains("offline")));
+    assert!(matches!(classify("<html>", "200 "), Fetch::Failed(r) if r.contains("JSON")));
+}

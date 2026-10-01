@@ -39,6 +39,24 @@ pub fn log(home: &Path, msg: &str) {
     }
 }
 
+/// `sidecrab.log` is rotated to `sidecrab.log.1` past this size.
+const EVENT_LOG_MAX: u64 = 256 * 1024;
+
+/// Always-on app event log (`<home>/sidecrab.log`): usage refreshes and their
+/// outcome, so "Refresh usage did nothing" can be answered without a debug
+/// session. App only — the hook never calls it (and never writes stdout).
+/// Never logs tokens or response bodies.
+pub fn event(home: &Path, msg: &str) {
+    let path = home.join("sidecrab.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > EVENT_LOG_MAX) {
+        let _ = std::fs::rename(&path, home.join("sidecrab.log.1"));
+    }
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "[{secs}] {msg}");
+    }
+}
+
 /// RAII span: logs "<label> start" immediately and "<label> end elapsed_ms=N"
 /// on drop. Declaring it at the top of a function times the whole call,
 /// including every early `return` in scope, without touching each one.

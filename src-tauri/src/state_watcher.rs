@@ -47,6 +47,7 @@ pub fn spawn(app: AppHandle) {
             return;
         }
 
+        let mut last_logged: Option<Value> = None;
         let touches = |ev: &notify::Result<notify::Event>, name: &str| {
             matches!(ev, Ok(e) if e.paths.iter().any(|p| p.file_name().is_some_and(|n| n == name)))
         };
@@ -67,6 +68,19 @@ pub fn spawn(app: AppHandle) {
             if limits {
                 if let Some(l) = read_limits() {
                     crate::usage_cache::update_five_hour(&l);
+                    // Log only real changes: the terminal statusLine rewrites
+                    // limits.json on every update with the same numbers.
+                    let shown = (&l["fiveHour"], &l["source"], l["stale"] == true);
+                    if last_logged.as_ref() != Some(&json!([shown.0, shown.1, shown.2])) {
+                        last_logged = Some(json!([shown.0, shown.1, shown.2]));
+                        crate::debug_log::event(
+                            &dir,
+                            &format!(
+                                "limits changed: source={} 5h used={}% resets_at={} stale={}; cache updated, UI notified",
+                                l["source"], l["fiveHour"]["usedPercentage"], l["fiveHour"]["resetsAt"], shown.2
+                            ),
+                        );
+                    }
                     let _ = app.emit("claude-limits", l);
                 }
             }

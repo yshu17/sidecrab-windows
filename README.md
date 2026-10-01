@@ -39,9 +39,9 @@ Captured from the real app at Medium size, no hat: the crab at his laptop and th
 - **Windows build**: native Win32 idle detection, click-through outside the
   sprite, and a watchdog that keeps him above ordinary windows (the Claude
   desktop app, browsers) without fighting other always-on-top apps.
-- **Claude Code plugin mode**: `/pet on`, `/pet off` and `/pet` (status) from
-  any Claude Code chat. He is off until you ask for him, and quits by himself
-  about 15 seconds after the last Claude Code process closes.
+- **Claude Code plugin mode**: he appears by himself when a Claude Code
+  session starts and quits about 15 seconds after the last Claude Code process
+  closes. `/pet on`, `/pet off` and `/pet` (status) work from any chat.
 - **Status bar**: activity dot, model and tokens, context meter, and the 5-hour
   usage meter with its local reset time. Compact mode shows a small plate that
   expands on hover.
@@ -85,7 +85,8 @@ Turn the mini plate on or off with **Compact status bar** in the right-click men
 | **Wander when idle** | short strolls when you are away |
 | **Compact status bar** | mini plate that expands on hover |
 | **Launch at login** | start with Windows |
-| **Refresh usage** | re-read the 5-hour limit now |
+| **Start with Claude Code** | appear with every Claude Code session (plugin mode, on by default) |
+| **Refresh usage** | ask for the 5-hour limit now; the reset time shows `…`, then `fail` if it could not |
 | **Check for Updates…** | look for a newer release here |
 | **Quit Sidecrab** | close the pet (`Ctrl+Q`) |
 
@@ -123,12 +124,13 @@ claude plugin marketplace add .
 claude plugin install sidecrab@local
 ```
 
-Restart Claude Code, then in any chat:
+Restart Claude Code. From then on he starts with every session (untick
+**Start with Claude Code** in his menu to stop that). In any chat:
 
 | Command | Result |
 |---|---|
 | `/pet on` | starts the pet, or shows it if it is already running |
-| `/pet off` | quits the pet completely |
+| `/pet off` | quits the pet completely, until the next session starts him |
 | `/pet` | tells you whether it is running |
 
 `/sidecrab` is an alias of `/pet`.

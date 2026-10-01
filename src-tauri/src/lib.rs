@@ -52,6 +52,25 @@ fn maybe_ask_consent(app: &AppHandle) {
         });
 }
 
+/// Should a freshly started process become the running pet? `--plugin` alone
+/// (SessionStart's re-arm) and `--quit` (`/pet off`) only mean something to an
+/// instance that is already running, so on their own they exit at once.
+/// `--show` (`/pet on`) and a bare launch always start; `--autostart`
+/// (SessionStart) starts only while "Start with Claude Code" is on.
+pub fn should_start(args: &[String], auto_start: bool) -> bool {
+    let has = |f: &str| args.iter().any(|a| a == f);
+    if has("--show") {
+        return true;
+    }
+    if has("--quit") {
+        return false;
+    }
+    if has("--autostart") {
+        return auto_start;
+    }
+    !has("--plugin")
+}
+
 /// Opaque region of the sprite as fractions of the window (x0,y0,x1,y1), pushed by
 /// the frontend. Used by the click-through poller — the crab is boxy, so a rect is
 /// an accurate hit shape.
@@ -119,6 +138,11 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
         .build(app)
         .ok()?;
 
+    let claude_start = CheckMenuItemBuilder::with_id("auto-start", "Start with Claude Code")
+        .checked(cfg.auto_start)
+        .build(app)
+        .ok()?;
+
     let autostart_on = {
         use tauri_plugin_autostart::ManagerExt;
         app.autolaunch().is_enabled().unwrap_or(false)
@@ -142,6 +166,9 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
         .item(&compact)
         .item(&autostart)
         .separator();
+    if cfg.plugin_managed {
+        menu = menu.item(&claude_start).separator();
+    }
     if !cfg.plugin_managed {
         menu = menu.item(&hooks).separator();
     }
@@ -216,6 +243,11 @@ fn on_menu(app: &AppHandle, id: &str) {
             c.compact_status = !c.compact_status;
             let _ = config::save(&c);
             let _ = app.emit("status-compact-changed", c.compact_status);
+        }
+        "auto-start" => {
+            let mut c = config::load();
+            c.auto_start = !c.auto_start;
+            let _ = config::save(&c);
         }
         "autostart" => {
             use tauri_plugin_autostart::ManagerExt;
@@ -332,10 +364,10 @@ pub fn run() {
     }
     tauri::Builder::default()
         // Second launch = no twin crabs; the existing instance just stays.
-        // A `--plugin` launch (SessionStart's re-arm, or `/pet on`) re-arms the
+        // A `--plugin` launch (SessionStart, or `/pet on`) re-arms the
         // Claude-bound lifecycle. `--show` (`/pet on`) raises the window.
-        // `--quit` (`/pet off`) exits it. See `setup()` below for what stops any
-        // of these three from ever starting a fresh instance on their own.
+        // `--quit` (`/pet off`) exits it. A fresh process is gated by
+        // `should_start` in `setup()` below.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--plugin") {
                 sessions::exit_with_claude();
@@ -376,21 +408,12 @@ pub fn run() {
         ])
         .setup(|app| {
             // Reaching setup() at all means no other Sidecrab was found running:
-            // this process itself is about to become the (new) instance — the
-            // single-instance plugin above already would have forwarded and
-            // killed it otherwise. `--plugin`-only (SessionStart's "re-arm the
-            // lifecycle if it's already running" signal — see plugin/hooks/hooks.json,
-            // which only sends it after its own tasklist check) and `--quit`-only
-            // (`/pet off`) both presuppose an existing instance; if there wasn't
-            // one, there is nothing to manage, so exit right now — before a
-            // window is ever meaningfully shown or a single background thread
-            // (usage API, watchers, pollers) starts. This is what keeps Sidecrab
-            // off by default: only a bare launch (no flags: a manual double-click
-            // or `sidecrab` on PATH) or an explicit `--show` (`/pet on`) may
-            // actually start it.
+            // the single-instance plugin above would have forwarded the args and
+            // ended this process otherwise. `should_start` decides whether this
+            // fresh process becomes the pet; if not, exit before any window is
+            // shown or any background thread (usage API, watchers, pollers) starts.
             let args: Vec<String> = std::env::args().collect();
-            let has = |f: &str| args.iter().any(|a| a == f);
-            if (has("--plugin") || has("--quit")) && !has("--show") {
+            if !should_start(&args, config::load().auto_start) {
                 app.handle().exit(0);
                 return Ok(());
             }
@@ -430,7 +453,7 @@ pub fn run() {
             refresh_app_menu(app.handle()); // settings under the app-name menu too
             state_watcher::spawn(app.handle().clone());
             sessions::spawn(app.handle().clone());
-            usage_api::spawn();
+            usage_api::spawn(app.handle().clone());
             usage_api::spawn_desktop_history();
             spawn_click_through_poller(app.handle().clone());
             topmost::spawn(app.handle().clone());

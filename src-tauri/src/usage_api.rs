@@ -11,9 +11,11 @@
 use crate::debug_log;
 use serde_json::{json, Value};
 use std::io::Write;
-use std::sync::{Condvar, Mutex};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
+use tauri::{AppHandle, Emitter};
 
 const URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// OAuth usage is fetched at startup, right after the window's reset time, on a
@@ -30,19 +32,43 @@ const RESET_GRACE: i64 = 5;
 pub enum Fetch {
     Ok(Value),
     RetryAfter(u64),
-    Failed,
+    /// Why, for the log (never the token or the response body).
+    Failed(String),
 }
 
-fn access_token() -> Option<String> {
-    let path = dirs::home_dir()?.join(".claude").join(".credentials.json");
-    let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    let o = &v["claudeAiOauth"];
+/// The OAuth token from Claude Code's credentials file, or why there is none.
+#[derive(Debug, PartialEq)]
+pub enum Token {
+    Ok(String),
+    Missing,
+    /// Only the Claude Code CLI rewrites this file; the desktop app keeps its own
+    /// login, so with the CLI unused for a while the stored token ages out.
+    Expired,
+}
+
+/// Read the token out of a parsed `.credentials.json`.
+pub fn token_from(creds: &Value, now_ms: i64) -> Token {
+    let o = &creds["claudeAiOauth"];
+    let Some(t) = o["accessToken"].as_str().filter(|t| !t.is_empty()) else {
+        return Token::Missing;
+    };
     // expiresAt is epoch ms; 0/absent when the desktop app manages refresh.
     let exp = o["expiresAt"].as_i64().unwrap_or(0);
-    if exp > 0 && exp <= now_ms() {
-        return None;
+    if exp > 0 && exp <= now_ms {
+        return Token::Expired;
     }
-    o["accessToken"].as_str().map(str::to_owned)
+    Token::Ok(t.to_owned())
+}
+
+fn access_token() -> Token {
+    let creds = dirs::home_dir()
+        .map(|h| h.join(".claude").join(".credentials.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    match creds {
+        Some(c) => token_from(&c, now_ms()),
+        None => Token::Missing,
+    }
 }
 
 fn now_ms() -> i64 {
@@ -70,8 +96,7 @@ fn fetch(token: &str) -> Fetch {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let Ok(mut child) = cmd.spawn() else {
-        debug_log::log(&home, "usage_api.fetch error=spawn_failed");
-        return Fetch::Failed;
+        return Fetch::Failed("curl could not be started".into());
     };
     let headers = format!(
         "Authorization: Bearer {token}\nanthropic-beta: oauth-2025-04-20\nUser-Agent: sidecrab\n"
@@ -80,26 +105,25 @@ fn fetch(token: &str) -> Fetch {
         let _ = stdin.write_all(headers.as_bytes());
     }
     let Ok(out) = child.wait_with_output() else {
-        debug_log::log(&home, "usage_api.fetch error=curl_wait_failed");
-        return Fetch::Failed;
+        return Fetch::Failed("curl did not finish".into());
     };
     let text = String::from_utf8_lossy(&out.stdout);
     let Some((body, status)) = text.rsplit_once('\n') else {
-        debug_log::log(&home, "usage_api.fetch error=no_status_line");
-        return Fetch::Failed;
+        return Fetch::Failed("no response (offline or timed out)".into());
     };
-    let mut status = status.split_whitespace();
-    let result = match (status.next(), status.next().and_then(|s| s.parse::<u64>().ok())) {
-        (Some("200"), _) => serde_json::from_str(body).map_or(Fetch::Failed, Fetch::Ok),
+    classify(body, status)
+}
+
+/// curl's output (body, then "<status> <retry-after>") -> outcome.
+pub fn classify(body: &str, status_line: &str) -> Fetch {
+    let mut status = status_line.split_whitespace();
+    match (status.next(), status.next().and_then(|s| s.parse::<u64>().ok())) {
+        (Some("200"), _) => serde_json::from_str(body)
+            .map_or_else(|_| Fetch::Failed("HTTP 200 with unreadable JSON".into()), Fetch::Ok),
         (Some("429"), Some(secs)) => Fetch::RetryAfter(secs),
-        _ => Fetch::Failed,
-    };
-    debug_log::log(&home, &format!("usage_api.fetch outcome={}", match result {
-        Fetch::Ok(_) => "ok",
-        Fetch::RetryAfter(_) => "retry_after",
-        Fetch::Failed => "failed",
-    }));
-    result
+        (Some("000") | None, _) => Fetch::Failed("no response (offline or timed out)".into()),
+        (Some(code), _) => Fetch::Failed(format!("HTTP {code}")),
+    }
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant).
@@ -148,26 +172,87 @@ pub fn to_limits(resp: &Value, now_s: i64) -> Option<Value> {
 }
 
 /// Earliest time (epoch s) the next request may go out; survives restarts.
-fn not_before_path() -> std::path::PathBuf {
+/// `server` = the wait came from a 429 Retry-After, which a manual refresh must
+/// respect; otherwise it is only our own schedule, which a manual refresh skips.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gate {
+    pub not_before: i64,
+    pub server: bool,
+}
+
+/// May a request go out now?
+pub fn may_fetch(now_s: i64, gate: Gate, manual: bool) -> bool {
+    now_s >= gate.not_before || (manual && !gate.server)
+}
+
+/// Manual refreshes closer together than this are dropped (menu mashing).
+pub const MANUAL_GAP_MS: i64 = 10_000;
+
+/// Accept a manual refresh? Not while one is still pending or running, and not
+/// within `MANUAL_GAP_MS` of the last accepted one.
+pub fn manual_allowed(now_ms: i64, last_accepted_ms: i64, busy: bool) -> bool {
+    !busy && now_ms - last_accepted_ms >= MANUAL_GAP_MS
+}
+
+fn gate_path() -> std::path::PathBuf {
     crate::paths::home().join("usage_api.json")
 }
 
-fn load_not_before() -> i64 {
-    std::fs::read_to_string(not_before_path())
+fn load_gate() -> Gate {
+    let v = std::fs::read_to_string(gate_path())
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v["notBefore"].as_i64())
-        .unwrap_or(0)
+        .unwrap_or(Value::Null);
+    Gate { not_before: v["notBefore"].as_i64().unwrap_or(0), server: v["server"] == true }
 }
 
-fn save_not_before(t: i64) {
-    let _ = std::fs::write(not_before_path(), json!({ "notBefore": t }).to_string());
+fn save_gate(g: Gate) {
+    let _ = std::fs::write(gate_path(), json!({ "notBefore": g.not_before, "server": g.server }).to_string());
 }
 
+static APP: OnceLock<AppHandle> = OnceLock::new();
 static REFRESH: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+static MANUAL_BUSY: AtomicBool = AtomicBool::new(false);
+static LAST_MANUAL_MS: AtomicI64 = AtomicI64::new(0);
+/// limits.json is read-modified-written by the OAuth and desktop-history
+/// threads; one lock so neither overwrites the other from a stale read.
+static LIMITS_LOCK: Mutex<()> = Mutex::new(());
 
-/// Manual refresh (menu). Still honours a server-imposed Retry-After.
+fn log(msg: &str) {
+    debug_log::event(&crate::paths::home(), msg);
+}
+
+/// Tell the status bar how a manual refresh is going ("running"/"ok"/"failed").
+fn emit_refresh(phase: &str, detail: &str) {
+    if let Some(app) = APP.get() {
+        let _ = app.emit("usage-refresh", json!({ "phase": phase, "detail": detail }));
+    }
+}
+
+fn finish_manual(ok: bool, detail: &str) {
+    log(&format!("manual refresh {}: {detail}", if ok { "done" } else { "failed" }));
+    emit_refresh(if ok { "ok" } else { "failed" }, detail);
+    MANUAL_BUSY.store(false, Ordering::SeqCst);
+}
+
+/// Manual refresh (menu). Forces a request now, skipping our own schedule but
+/// still honouring a server-imposed Retry-After. One at a time; repeats within
+/// `MANUAL_GAP_MS` are dropped.
 pub fn request_refresh() {
+    let now = now_ms();
+    let busy = MANUAL_BUSY.load(Ordering::SeqCst);
+    if !manual_allowed(now, LAST_MANUAL_MS.load(Ordering::SeqCst), busy) {
+        log(if busy {
+            "manual refresh ignored: one is already running"
+        } else {
+            "manual refresh ignored: pressed again too soon"
+        });
+        return;
+    }
+    LAST_MANUAL_MS.store(now, Ordering::SeqCst);
+    MANUAL_BUSY.store(true, Ordering::SeqCst);
+    log("manual refresh requested");
+    emit_refresh("running", "");
     *REFRESH.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
     REFRESH.1.notify_all();
 }
@@ -177,19 +262,20 @@ pub fn refresh_usage() {
     request_refresh();
 }
 
-/// Sleep up to `secs`, waking early for a manual refresh.
-fn wait(secs: u64) {
+/// Sleep up to `secs`, waking early for a manual refresh. True = woken by one.
+fn wait(secs: u64) -> bool {
     let g = REFRESH.0.lock().unwrap_or_else(|e| e.into_inner());
     let (mut g, _) = REFRESH
         .1
         .wait_timeout_while(g, Duration::from_secs(secs.max(1)), |flag| !*flag)
         .unwrap_or_else(|e| e.into_inner());
-    *g = false;
+    std::mem::take(&mut *g)
 }
 
 /// The last fetch failed: keep the last limits but flag them stale so the UI
 /// says so. A later successful write (any source) clears the flag.
 fn mark_stale(path: &std::path::Path) {
+    let _lock = LIMITS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut l) = std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -201,58 +287,96 @@ fn mark_stale(path: &std::path::Path) {
     write_limits(path, &l);
 }
 
+/// Atomic replace; the watcher then emits `claude-limits`. Callers hold LIMITS_LOCK.
 fn write_limits(path: &std::path::Path, l: &Value) {
     let _ = std::fs::create_dir_all(path.parent().unwrap_or(path));
     let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, l.to_string()).is_ok() {
-        let _ = std::fs::rename(&tmp, path); // watcher emits claude-limits
+    if std::fs::write(&tmp, l.to_string()).is_ok() && std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
-pub fn spawn() {
+pub fn spawn(app: AppHandle) {
+    let _ = APP.set(app);
     std::thread::spawn(|| {
         let path = crate::paths::home().join("limits.json");
         let mut backoff = BACKGROUND / 6; // 5 min, doubling per consecutive failure
+        let mut manual = false;
         loop {
             let now = now_ms() / 1000;
-            let not_before = load_not_before();
-            if now < not_before {
-                wait((not_before - now) as u64);
+            let gate = load_gate();
+            if !may_fetch(now, gate, manual) {
+                if manual {
+                    // Asking during a 429 block seems to extend it: refresh the
+                    // local source only, and say how long the server wants.
+                    sync_desktop_history();
+                    finish_manual(false, &format!("server asked to wait {}s more (HTTP 429)", gate.not_before - now));
+                }
+                manual = wait((gate.not_before - now).max(1) as u64);
                 continue;
             }
+            log(&format!("oauth request started ({})", if manual { "manual" } else { "scheduled" }));
             let result = match access_token() {
-                Some(t) => fetch(&t),
-                None => Fetch::Failed,
+                Token::Ok(t) => fetch(&t),
+                Token::Missing => Fetch::Failed("no Claude Code login in ~/.claude/.credentials.json".into()),
+                Token::Expired => Fetch::Failed(
+                    "stored token expired (only the Claude Code CLI renews ~/.claude/.credentials.json)".into(),
+                ),
             };
-            let next = match result {
+            let mut server = false;
+            let (next, outcome): (u64, Result<String, String>) = match result {
                 Fetch::Ok(r) => match to_limits(&r, now) {
                     Some(l) => {
-                        write_limits(&path, &l);
+                        {
+                            let _lock = LIMITS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                            write_limits(&path, &l);
+                        }
                         backoff = BACKGROUND / 6;
+                        let resets = l["fiveHour"]["resetsAt"].as_i64().unwrap_or(0);
+                        let msg = format!(
+                            "5h used={}% resets_at={resets}, limits.json written",
+                            l["fiveHour"]["usedPercentage"]
+                        );
                         // Next: just after this window resets, else the rare background refresh.
-                        let until_reset = l["fiveHour"]["resetsAt"].as_i64().unwrap_or(0) - now + RESET_GRACE;
-                        if until_reset > 0 { (until_reset as u64).min(BACKGROUND) } else { BACKGROUND }
+                        let until_reset = resets - now + RESET_GRACE;
+                        let next = if until_reset > 0 { (until_reset as u64).min(BACKGROUND) } else { BACKGROUND };
+                        (next, Ok(msg))
                     }
                     None => {
-                        mark_stale(&path); // shape changed
+                        mark_stale(&path);
                         backoff = (backoff * 2).min(MAX_BACKOFF);
-                        backoff
+                        (backoff, Err("response has no five_hour window (shape changed?)".into()))
                     }
                 },
                 // Server-dictated wait, never earlier.
                 Fetch::RetryAfter(secs) => {
                     mark_stale(&path);
-                    secs + 30
+                    server = true;
+                    (secs + 30, Err(format!("HTTP 429, retry after {secs}s")))
                 }
                 // Expired token / offline / 5xx.
-                Fetch::Failed => {
+                Fetch::Failed(why) => {
                     mark_stale(&path);
                     backoff = (backoff * 2).min(MAX_BACKOFF);
-                    backoff
+                    (backoff, Err(why))
                 }
             };
-            save_not_before(now + next as i64);
-            wait(next);
+            match &outcome {
+                Ok(msg) => log(&format!("oauth ok: {msg}")),
+                Err(why) => log(&format!("oauth error: {why}; keeping last value, next try in {next}s")),
+            }
+            save_gate(Gate { not_before: now + next as i64, server });
+            if manual {
+                match outcome {
+                    Ok(msg) => finish_manual(true, &msg),
+                    Err(why) => {
+                        // OAuth failed: at least pick up the desktop app's latest sample now.
+                        sync_desktop_history();
+                        finish_manual(false, &why);
+                    }
+                }
+            }
+            manual = wait(next);
         }
     });
 }
@@ -306,40 +430,46 @@ pub fn from_history(history: &Value, now_s: i64) -> Option<Value> {
     }))
 }
 
-/// Keep limits.json fed from the desktop history. Within a window whose reset
-/// time a precise source (OAuth, statusLine) already gave, only the percentage
-/// is refreshed (when the sample is newer); otherwise the estimate is written.
-pub fn spawn_desktop_history() {
-    std::thread::spawn(|| loop {
-        let now = now_ms() / 1000;
-        let limits = crate::paths::home().join("limits.json");
-        let existing: Value = std::fs::read_to_string(&limits)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(Value::Null);
-        let history = dirs::config_dir()
-            .map(|d| d.join("Claude").join("plan-usage-history.json"))
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok());
-        if let Some(l) = history.and_then(|h| from_history(&h, now)) {
-            let precise_window = !existing.is_null()
-                && existing["source"].as_str() != Some("desktop")
-                && existing["estimated"] != true
-                && existing["fiveHour"]["resetsAt"].as_i64().unwrap_or(0) > now;
-            if precise_window {
-                if l["ts"].as_i64() > existing["ts"].as_i64() {
-                    let mut m = existing.clone();
-                    m["fiveHour"]["usedPercentage"] = l["fiveHour"]["usedPercentage"].clone();
-                    m["ts"] = l["ts"].clone();
-                    m.as_object_mut().map(|o| o.remove("stale")); // fresh percentage
-                    if m["fiveHour"] != existing["fiveHour"] {
-                        write_limits(&limits, &m);
-                    }
-                }
-            } else if l["fiveHour"] != existing["fiveHour"] || existing["stale"] == true {
-                write_limits(&limits, &l);
+/// One pass of the desktop-history source. Within a window whose reset time a
+/// precise source (OAuth, statusLine) already gave, only the percentage is
+/// refreshed (when the sample is newer); otherwise the estimate is written.
+fn sync_desktop_history() {
+    let now = now_ms() / 1000;
+    let limits = crate::paths::home().join("limits.json");
+    let history = dirs::config_dir()
+        .map(|d| d.join("Claude").join("plan-usage-history.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    let Some(l) = history.and_then(|h| from_history(&h, now)) else { return };
+    let _lock = LIMITS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let existing: Value = std::fs::read_to_string(&limits)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    let precise_window = !existing.is_null()
+        && existing["source"].as_str() != Some("desktop")
+        && existing["estimated"] != true
+        && existing["fiveHour"]["resetsAt"].as_i64().unwrap_or(0) > now;
+    if precise_window {
+        if l["ts"].as_i64() > existing["ts"].as_i64() {
+            let mut m = existing.clone();
+            m["fiveHour"]["usedPercentage"] = l["fiveHour"]["usedPercentage"].clone();
+            m["ts"] = l["ts"].clone();
+            m.as_object_mut().map(|o| o.remove("stale")); // fresh percentage
+            if m["fiveHour"] != existing["fiveHour"] {
+                write_limits(&limits, &m);
             }
         }
+    } else if l["fiveHour"] != existing["fiveHour"] || existing["stale"] == true {
+        write_limits(&limits, &l);
+    }
+}
+
+/// Keep limits.json fed from the desktop history every 30 s (a manual refresh
+/// whose OAuth request fails also runs one pass at once).
+pub fn spawn_desktop_history() {
+    std::thread::spawn(|| loop {
+        sync_desktop_history();
         std::thread::sleep(Duration::from_secs(30));
     });
 }

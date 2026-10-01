@@ -21,6 +21,7 @@ fn round_trips() {
         plugin_managed: true,
         hat: "fedora".into(),
         compact_status: false,
+        auto_start: false,
     };
     save_to(&path, &c).unwrap();
     assert_eq!(load_from(&path), c);
@@ -68,4 +69,16 @@ fn corrupt_file_yields_defaults() {
     let path = tmp("corrupt");
     std::fs::write(&path, "{not json").unwrap();
     assert_eq!(load_from(&path), Config::default());
+}
+
+#[test]
+fn auto_start_defaults_on_and_survives_old_configs() {
+    assert!(Config::default().auto_start);
+    // Configs written before the setting existed start the pet with Claude Code.
+    let path = tmp("autostart");
+    std::fs::write(&path, r#"{"size":"S","pluginManaged":true}"#).unwrap();
+    assert!(load_from(&path).auto_start);
+    // An explicit "off" from the menu is kept.
+    std::fs::write(&path, r#"{"autoStart":false}"#).unwrap();
+    assert!(!load_from(&path).auto_start);
 }

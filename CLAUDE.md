@@ -43,6 +43,9 @@ Two processes, talking only through files under `SIDECRAB_HOME` (default `%APPDA
 - Activity: hook events (green thinking/tool, yellow permission, red error or 10 min silent while working, grey idle).
 - Context/model: the session's `sessions.d` record — from `sidecrab-hook statusline` in terminals, else from the latest `usage` in `transcript_path` (desktop app has no statusLine). Input-side tokens; window 1M except Haiku (200K).
 - 5-hour limit: `limits.json` (watcher emits `claude-limits`). Sources by precision: `usage_api.rs` (OAuth endpoint; at startup, after reset, on "Refresh usage", else every 30 min; honours and persists 429 `Retry-After`; keeps last value flagged `stale` on failure; token from `~/.claude/.credentials.json`, passed to curl via stdin), the terminal statusLine, and the desktop app's `%APPDATA%\Claude\plan-usage-history.json` (exact %, reset time estimated, shown `~14:30`).
+- The token in `.credentials.json` is renewed only by the Claude Code CLI (any `claude` command); the desktop app keeps its own login. Desktop-only use lets it expire: OAuth then fails with "stored token expired" and the desktop history is the source.
+- "Refresh usage": `usage_api.json` holds `{notBefore, server}`; a manual refresh skips our own schedule (`may_fetch`) but never a server 429 (`server: true`). One at a time, repeats within 10 s dropped (`manual_allowed`). On failure it also re-reads the desktop history at once. Progress goes to the webview as `usage-refresh` (`running|ok|failed`), shown as `…`/`fail` in the reset-time slot. OAuth and desktop writers share `LIMITS_LOCK` for limits.json.
+- `<home>/sidecrab.log` (always on, rotated at 256 KB, app only, never tokens): manual refresh requested/ignored/done/failed, OAuth started/ok/error with reason, and every real change of limits.json (cache updated, UI notified).
 - `usage_cache.rs` → `usage_cache.json`: fast start/fallback only, never truth; unconfirmed values are drawn dimmed with `?`. The webview pulls `status_snapshot` after attaching listeners (earlier events are lost).
 - Compact mode (`Config.compact_status`, default on; old key `autoHideStatus` accepted): collapses to a mini plate that grows from the centre on hover. Hover comes from the Rust poller because the panel is click-through. `config.json` is read with a UTF-8 BOM stripped (a rejected file resets all settings).
 
@@ -63,14 +66,15 @@ Two processes, talking only through files under `SIDECRAB_HOME` (default `%APPDA
 
 This repo is a local marketplace (`.claude-plugin/marketplace.json`, name `local`); plugin `sidecrab@local` is `plugin/`, its hooks call `${CLAUDE_PLUGIN_ROOT}/bin/sidecrab-hook.exe`. Don't also install hooks into `settings.json` while the plugin is on (events fire twice).
 
-**Off by default.** Only `/pet on` / `/sidecrab on` (`plugin/commands/`) start it; `/pet off` quits it fully (no threads, no usage calls); bare `/pet` reports ON/OFF via `tasklist` (no persisted flag). `SessionStart` runs `sidecrab-hook.exe start` plus a `tasklist`-guarded `sidecrab.exe --plugin`, so nothing is spawned while off.
+**Starts with Claude Code** (`Config.auto_start`, default on; menu "Start with Claude Code", shown in plugin mode). `SessionStart` runs `sidecrab.exe --plugin --autostart >/dev/null 2>&1` (no stdout into the session context) plus `sidecrab-hook.exe start`. The launcher returns in ~50 ms (~300 ms with Git Bash); a running pet just gets the args forwarded (single instance), a fresh one starts only if `auto_start` is on. `/pet on` / `/sidecrab on` (`plugin/commands/`) start or show it regardless; `/pet off` quits it fully (no threads, no usage calls) until the next session start; bare `/pet` reports ON/OFF via `tasklist`.
 
 CLI flags, handled in the `tauri_plugin_single_instance` callback (only in the already-running instance, so never a duplicate):
 - `--show`: raise/show the window (not a toggle).
 - `--quit`: exit.
 - `--plugin`: arm the quit-with-Claude watch; sets `Config.plugin_managed` (no consent dialog, no hooks menu item).
+- `--autostart`: SessionStart's launch; starts a fresh pet only while `auto_start` is on.
 
-`--plugin`/`--quit` reaching a *fresh* process (pet was off) exit at the top of `.setup()` before any window or thread starts — only a bare launch or `--show` really starts Sidecrab.
+A *fresh* process (pet was off) asks `lib::should_start` (tested in `tests/lifecycle.rs`) at the top of `.setup()` and exits before any window or thread starts unless it is a bare launch, `--show`, or `--autostart` with auto-start on.
 
 ## Hook latency (Claude Code must never wait on us)
 

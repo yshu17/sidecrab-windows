@@ -4,8 +4,9 @@ allowed-tools: Bash
 ---
 The user's argument, if any, is: $ARGUMENTS
 
-Sidecrab is off by default and never launches on its own — only this command
-starts it. Pick exactly one script below based on the argument (case-insensitive)
+Sidecrab starts with every Claude Code session unless "Start with Claude Code"
+is unchecked in its right-click menu; this command starts, shows or quits it
+by hand (`off` lasts until the next session starts it again). Pick exactly one script below based on the argument (case-insensitive)
 and run it, then report only its last line to the user, verbatim — no extra
 commentary:
 
@@ -33,7 +34,7 @@ else
 fi
 ```
 
-Off (stops the Sidecrab process entirely — no window, no hooks doing real work, no usage-API calls until /pet on again):
+Off (stops the Sidecrab process entirely — no window, no hooks doing real work, no usage-API calls until /pet on or the next session start):
 ```bash
 if ! tasklist //FI "IMAGENAME eq sidecrab.exe" 2>/dev/null | grep -qi sidecrab.exe; then
   echo "Pet: OFF"

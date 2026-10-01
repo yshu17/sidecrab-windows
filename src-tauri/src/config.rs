@@ -22,6 +22,9 @@ pub struct Config {
     /// its strip. Read from the older `autoHideStatus` key too.
     #[serde(alias = "autoHideStatus")]
     pub compact_status: bool,
+    /// Plugin mode: every Claude Code session start launches the pet (single
+    /// instance, background). Off = only `/pet on` starts it.
+    pub auto_start: bool,
 }
 
 impl Default for Config {
@@ -35,6 +38,7 @@ impl Default for Config {
             plugin_managed: false,
             hat: "none".into(),
             compact_status: true,
+            auto_start: true,
         }
     }
 }
