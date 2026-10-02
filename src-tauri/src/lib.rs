@@ -143,6 +143,11 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
         .build(app)
         .ok()?;
 
+    let renew = CheckMenuItemBuilder::with_id("renew-login", "Keep Claude login fresh")
+        .checked(cfg.renew_login)
+        .build(app)
+        .ok()?;
+
     let autostart_on = {
         use tauri_plugin_autostart::ManagerExt;
         app.autolaunch().is_enabled().unwrap_or(false)
@@ -167,7 +172,9 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
         .item(&autostart)
         .separator();
     if cfg.plugin_managed {
-        menu = menu.item(&claude_start).separator();
+        menu = menu.item(&claude_start).item(&renew).separator();
+    } else {
+        menu = menu.item(&renew).separator();
     }
     if !cfg.plugin_managed {
         menu = menu.item(&hooks).separator();
@@ -176,10 +183,10 @@ fn build_settings_menu(app: &AppHandle) -> Option<tauri::menu::Submenu<tauri::Wr
         .items(&[
             &MenuItemBuilder::with_id(
                 "usage-refresh",
-                if usage_api::login_needed() {
-                    "Refresh usage (login expired: use Claude Code in a terminal)"
-                } else {
-                    "Refresh usage"
+                match (usage_api::login_needed(), cfg.renew_login) {
+                    (false, _) => "Refresh usage",
+                    (true, true) => "Refresh usage (Claude login expired: renews on refresh)",
+                    (true, false) => "Refresh usage (login expired: use Claude Code in a terminal)",
                 },
             )
             .build(app)
@@ -252,6 +259,11 @@ fn on_menu(app: &AppHandle, id: &str) {
             c.compact_status = !c.compact_status;
             let _ = config::save(&c);
             let _ = app.emit("status-compact-changed", c.compact_status);
+        }
+        "renew-login" => {
+            let mut c = config::load();
+            c.renew_login = !c.renew_login;
+            let _ = config::save(&c);
         }
         "auto-start" => {
             let mut c = config::load();

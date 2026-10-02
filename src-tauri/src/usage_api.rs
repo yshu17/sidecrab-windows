@@ -19,9 +19,9 @@ use tauri::{AppHandle, Emitter};
 
 const URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// OAuth usage is fetched at startup, right after the window's reset time, on a
-/// manual refresh, and otherwise only this rarely (5h usage also moves with other
-/// sessions and devices, but the endpoint is rate limited).
-const BACKGROUND: u64 = 30 * 60;
+/// manual refresh, and otherwise this often (5h usage also moves with other
+/// sessions and devices). A 429 Retry-After from the endpoint always wins.
+const BACKGROUND: u64 = 5 * 60;
 const MAX_BACKOFF: u64 = 60 * 60;
 /// After the reset time, wait this long before asking for the new window.
 const RESET_GRACE: i64 = 5;
@@ -58,6 +58,67 @@ pub fn token_from(creds: &Value, now_ms: i64) -> Token {
         return Token::Expired;
     }
     Token::Ok(t.to_owned())
+}
+
+/// Only the Claude Code CLI renews the stored login, and only when it talks to
+/// the API itself. `claude mcp list` does (it lists the account's claude.ai
+/// connectors), so Sidecrab asks Claude Code to renew its own login — it never
+/// touches the credentials itself. Gap between attempts: an hour on its own,
+/// 5 minutes when the user pressed Refresh.
+const RENEW_GAP_S: i64 = 60 * 60;
+const RENEW_GAP_MANUAL_S: i64 = 5 * 60;
+const RENEW_TIMEOUT: Duration = Duration::from_secs(90);
+static LAST_RENEW_S: AtomicI64 = AtomicI64::new(0);
+
+pub fn renew_allowed(now_s: i64, last_s: i64, manual: bool) -> bool {
+    now_s - last_s >= if manual { RENEW_GAP_MANUAL_S } else { RENEW_GAP_S }
+}
+
+fn config_renew_on() -> bool {
+    crate::config::load().renew_login
+}
+
+/// Run `claude mcp list` (fixed arguments, no window, output discarded) and
+/// re-read the token. `claude` is an npm `.cmd` shim on Windows, hence cmd /C.
+fn renew_login() -> Token {
+    log("login expired: asking Claude Code to renew it (claude mcp list)");
+    let mut cmd = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/D", "/C", "claude", "mcp", "list"]);
+        c
+    } else {
+        let mut c = Command::new("claude");
+        c.args(["mcp", "list"]);
+        c
+    };
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let t0 = std::time::Instant::now();
+    match cmd.spawn() {
+        Err(e) => log(&format!("login renew: could not start claude ({e})")),
+        Ok(mut child) => loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if t0.elapsed() < RENEW_TIMEOUT => std::thread::sleep(Duration::from_millis(250)),
+                _ => {
+                    let _ = child.kill();
+                    log("login renew: claude did not finish in time");
+                    break;
+                }
+            }
+        },
+    }
+    let token = access_token();
+    log(&format!(
+        "login renew: {} after {} ms",
+        if matches!(token, Token::Ok(_)) { "renewed" } else { "still not valid" },
+        t0.elapsed().as_millis()
+    ));
+    token
 }
 
 fn access_token() -> Token {
@@ -307,8 +368,16 @@ pub fn spawn(app: AppHandle) {
     let _ = APP.set(app);
     std::thread::spawn(|| {
         let path = crate::paths::home().join("limits.json");
-        let mut backoff = BACKGROUND / 6; // 5 min, doubling per consecutive failure
+        let mut backoff = BACKGROUND; // doubling per consecutive failure, up to MAX_BACKOFF
         let mut manual = false;
+        // A schedule saved by an older, slower version (or before a long
+        // sleep) must not hold the first request back past the current
+        // interval; a server Retry-After is kept as is.
+        let g = load_gate();
+        let start = now_ms() / 1000;
+        if !g.server && g.not_before > start + BACKGROUND as i64 {
+            save_gate(Gate { not_before: start, server: false });
+        }
         loop {
             let now = now_ms() / 1000;
             let gate = load_gate();
@@ -323,7 +392,11 @@ pub fn spawn(app: AppHandle) {
                 continue;
             }
             log(&format!("oauth request started ({})", if manual { "manual" } else { "scheduled" }));
-            let token = access_token();
+            let mut token = access_token();
+            if token == Token::Expired && config_renew_on() && renew_allowed(now, LAST_RENEW_S.load(Ordering::SeqCst), manual) {
+                LAST_RENEW_S.store(now, Ordering::SeqCst);
+                token = renew_login();
+            }
             let login = !matches!(token, Token::Ok(_));
             let result = match token {
                 Token::Ok(t) => fetch(&t),
@@ -340,7 +413,7 @@ pub fn spawn(app: AppHandle) {
                             let _lock = LIMITS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
                             write_limits(&path, &l);
                         }
-                        backoff = BACKGROUND / 6;
+                        backoff = BACKGROUND;
                         let resets = l["fiveHour"]["resetsAt"].as_i64().unwrap_or(0);
                         let msg = format!(
                             "5h used={}% resets_at={resets}, limits.json written",
@@ -430,7 +503,10 @@ pub fn from_history(history: &Value, now_s: i64) -> Option<Value> {
     } else {
         at(first)?
     };
-    let resets = if pct > 0.0 { start + WINDOW_S } else { now_s + WINDOW_S };
+    // No usage yet = no window yet. Anchor the placeholder to the sample, not to
+    // "now": a now-based time slid forward on every 30 s pass, rewriting
+    // limits.json (and the log) each time and never settling.
+    let resets = if pct > 0.0 { start + WINDOW_S } else { t_last + WINDOW_S };
     Some(json!({
         "fiveHour": { "usedPercentage": pct, "resetsAt": resets },
         "estimated": true,

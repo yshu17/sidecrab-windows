@@ -64,7 +64,10 @@ fn history_window_break_on_usage_drop() {
 fn history_zero_usage_has_no_window_yet() {
     let l = from_history(&hist(&[(0, 5.0), (900, 0.0)]), 1000).unwrap();
     assert_eq!(l["fiveHour"]["usedPercentage"], 0.0);
-    assert_eq!(l["fiveHour"]["resetsAt"], 1000 + 5 * 3600);
+    // Anchored to the sample (t=900), so repeated passes write the same value.
+    assert_eq!(l["fiveHour"]["resetsAt"], 900 + 5 * 3600);
+    let again = from_history(&hist(&[(0, 5.0), (900, 0.0)]), 1030).unwrap();
+    assert_eq!(again, l);
 }
 
 #[test]
@@ -121,4 +124,15 @@ fn http_outcomes_carry_a_reason() {
     assert!(matches!(classify("", "401 "), Fetch::Failed(r) if r == "HTTP 401"));
     assert!(matches!(classify("", "000 "), Fetch::Failed(r) if r.contains("offline")));
     assert!(matches!(classify("<html>", "200 "), Fetch::Failed(r) if r.contains("JSON")));
+}
+
+#[test]
+fn login_renewal_is_rate_limited() {
+    use sidecrab_lib::usage_api::renew_allowed;
+    let t = 1_790_000_000;
+    assert!(renew_allowed(t, 0, false), "never tried");
+    assert!(!renew_allowed(t + 59 * 60, t, false), "on its own: at most hourly");
+    assert!(renew_allowed(t + 60 * 60, t, false));
+    assert!(!renew_allowed(t + 4 * 60, t, true), "Refresh: at most every 5 min");
+    assert!(renew_allowed(t + 5 * 60, t, true));
 }

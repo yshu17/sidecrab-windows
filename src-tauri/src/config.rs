@@ -25,6 +25,9 @@ pub struct Config {
     /// Plugin mode: every Claude Code session start launches the pet (single
     /// instance, background). Off = only `/pet on` starts it.
     pub auto_start: bool,
+    /// When the stored Claude Code login has expired, ask Claude Code to renew
+    /// it (`claude mcp list`) so the 5-hour meter stays live.
+    pub renew_login: bool,
 }
 
 impl Default for Config {
@@ -39,6 +42,7 @@ impl Default for Config {
             hat: "none".into(),
             compact_status: true,
             auto_start: true,
+            renew_login: true,
         }
     }
 }

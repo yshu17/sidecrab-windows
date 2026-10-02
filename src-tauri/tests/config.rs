@@ -22,6 +22,7 @@ fn round_trips() {
         hat: "fedora".into(),
         compact_status: false,
         auto_start: false,
+        renew_login: false,
     };
     save_to(&path, &c).unwrap();
     assert_eq!(load_from(&path), c);
@@ -81,4 +82,12 @@ fn auto_start_defaults_on_and_survives_old_configs() {
     // An explicit "off" from the menu is kept.
     std::fs::write(&path, r#"{"autoStart":false}"#).unwrap();
     assert!(!load_from(&path).auto_start);
+}
+
+#[test]
+fn renew_login_defaults_on() {
+    assert!(Config::default().renew_login);
+    let path = tmp("renew");
+    std::fs::write(&path, r#"{"size":"M"}"#).unwrap();
+    assert!(load_from(&path).renew_login);
 }
