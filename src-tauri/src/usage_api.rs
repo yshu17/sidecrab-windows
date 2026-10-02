@@ -1,7 +1,12 @@
 //! Plan usage (5-hour window) from Anthropic's OAuth usage endpoint — the same
 //! source as Claude Code's `/usage`. The statusLine's `rate_limits` only exists
-//! in terminal sessions; the desktop app never runs a statusLine, so this is the
-//! only way to get the limit there.
+//! in terminal sessions; the desktop app never runs a statusLine.
+//!
+//! The plugin's `session.measure` hook (plugin/hooks/limits.ts) writes the
+//! engine's own figure as source "session", free and at once. While that value
+//! is fresh the scheduled OAuth request is skipped; OAuth stays the fallback
+//! for idle time, a manual refresh and a window reset, the desktop app's
+//! samples the last resort.
 //!
 //! Best effort by design: the endpoint is undocumented and rate limited. Any
 //! failure (no credentials, expired token, 429, changed shape) leaves the last
@@ -23,6 +28,10 @@ const URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// sessions and devices). A 429 Retry-After from the endpoint always wins.
 const BACKGROUND: u64 = 5 * 60;
 const MAX_BACKOFF: u64 = 60 * 60;
+/// A plugin-written ("session") limit younger than this makes the scheduled
+/// OAuth request unnecessary: the engine re-sends it after every turn and on
+/// every whole-point move, so an older one means Claude Code went quiet.
+pub const SESSION_FRESH_S: i64 = 10 * 60;
 /// After the reset time, wait this long before asking for the new window.
 const RESET_GRACE: i64 = 5;
 
@@ -340,17 +349,66 @@ fn wait(secs: u64) -> bool {
     std::mem::take(&mut *g)
 }
 
+/// limits.json as a writer finds it. The plugin writes it in place, without
+/// our lock, so a reader can catch it empty or cut short: that is
+/// `Unreadable`, never "no value" — writers then leave it alone and the next
+/// pass (or the watcher's next event) reads the finished file.
+#[derive(Debug, PartialEq)]
+pub enum Existing {
+    Missing,
+    Unreadable,
+    Limits(Value),
+}
+
+pub fn read_existing(path: &std::path::Path) -> Existing {
+    match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Existing::Missing,
+        Err(_) => Existing::Unreadable,
+        Ok(s) => match serde_json::from_str::<Value>(&s) {
+            Ok(v) if v.is_object() => Existing::Limits(v),
+            _ => Existing::Unreadable,
+        },
+    }
+}
+
+/// Age in seconds of a fresh plugin-written limit, or None: source "session",
+/// younger than SESSION_FRESH_S, and its window not yet reset.
+pub fn fresh_session(l: &Value, now_s: i64) -> Option<i64> {
+    let age = now_s - l["ts"].as_i64()?;
+    (l["source"] == "session"
+        && (0..SESSION_FRESH_S).contains(&age)
+        && l["fiveHour"]["resetsAt"].as_i64()? > now_s)
+        .then_some(age)
+}
+
+/// How long the scheduled loop sleeps after skipping a request for a fresh
+/// session value: until that value would turn stale or its window resets
+/// (plus RESET_GRACE), never longer than the usual interval.
+pub fn skip_wait(l: &Value, age: i64, now_s: i64) -> u64 {
+    let until_stale = SESSION_FRESH_S - age;
+    let until_reset = l["fiveHour"]["resetsAt"].as_i64().unwrap_or(now_s) - now_s + RESET_GRACE;
+    until_stale.min(until_reset).clamp(1, BACKGROUND as i64) as u64
+}
+
+/// May an OAuth result taken at `oauth_ts` replace what is on disk? Not a
+/// plugin value written at or after the request went out for the same,
+/// unreset window: that one is at least as new and comes from the engine.
+pub fn oauth_may_replace(existing: &Existing, oauth_ts: i64, now_s: i64) -> bool {
+    let Existing::Limits(l) = existing else { return true };
+    !(l["source"] == "session"
+        && l["ts"].as_i64().is_some_and(|ts| ts >= oauth_ts)
+        && l["fiveHour"]["resetsAt"].as_i64().is_some_and(|r| r > now_s))
+}
+
 /// The last fetch failed: keep the last limits but flag them stale so the UI
-/// says so. A later successful write (any source) clears the flag.
+/// says so. A later successful write (any source) clears the flag. A
+/// plugin-written value is left alone: an OAuth failure says nothing about it.
 fn mark_stale(path: &std::path::Path) {
     let _lock = LIMITS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(mut l) = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .filter(|l| l["stale"] != true && l.is_object())
-    else {
+    let Existing::Limits(mut l) = read_existing(path) else { return };
+    if l["stale"] == true || l["source"] == "session" {
         return;
-    };
+    }
     l["stale"] = json!(true);
     write_limits(path, &l);
 }
@@ -391,6 +449,17 @@ pub fn spawn(app: AppHandle) {
                 manual = wait((gate.not_before - now).max(1) as u64);
                 continue;
             }
+            if !manual {
+                if let Existing::Limits(l) = read_existing(&path) {
+                    if let Some(age) = fresh_session(&l, now) {
+                        let next = skip_wait(&l, age, now);
+                        log(&format!("oauth skipped: fresh session limits (age {age}s), next check in {next}s"));
+                        save_gate(Gate { not_before: now + next as i64, server: false });
+                        manual = wait(next);
+                        continue;
+                    }
+                }
+            }
             log(&format!("oauth request started ({})", if manual { "manual" } else { "scheduled" }));
             let mut token = access_token();
             if token == Token::Expired && config_renew_on() && renew_allowed(now, LAST_RENEW_S.load(Ordering::SeqCst), manual) {
@@ -409,15 +478,23 @@ pub fn spawn(app: AppHandle) {
             let (next, outcome): (u64, Result<String, String>) = match result {
                 Fetch::Ok(r) => match to_limits(&r, now) {
                     Some(l) => {
-                        {
+                        let written = {
+                            // Decide and write under one lock: the desktop writer
+                            // can't slip in between. The plugin writes without it;
+                            // whatever lands last, its next measure rewrites.
                             let _lock = LIMITS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-                            write_limits(&path, &l);
-                        }
+                            let replace = oauth_may_replace(&read_existing(&path), now, now_ms() / 1000);
+                            if replace {
+                                write_limits(&path, &l);
+                            }
+                            replace
+                        };
                         backoff = BACKGROUND;
                         let resets = l["fiveHour"]["resetsAt"].as_i64().unwrap_or(0);
                         let msg = format!(
-                            "5h used={}% resets_at={resets}, limits.json written",
-                            l["fiveHour"]["usedPercentage"]
+                            "5h used={}% resets_at={resets}, {}",
+                            l["fiveHour"]["usedPercentage"],
+                            if written { "limits.json written" } else { "kept the newer session value" }
                         );
                         // Next: just after this window resets, else the rare background refresh.
                         let until_reset = resets - now + RESET_GRACE;
@@ -515,9 +592,43 @@ pub fn from_history(history: &Value, now_s: i64) -> Option<Value> {
     }))
 }
 
-/// One pass of the desktop-history source. Within a window whose reset time a
-/// precise source (OAuth, statusLine) already gave, only the percentage is
+/// What the desktop-history estimate `l` should make of limits.json, if
+/// anything. A file caught mid-write is left alone; a plugin ("session") value
+/// is never touched while its window lasts (the engine's figure is exact, and
+/// OAuth takes over once it goes quiet). Within a window whose reset time
+/// another precise source (OAuth, statusLine) gave, only the percentage is
 /// refreshed (when the sample is newer); otherwise the estimate is written.
+pub fn desktop_merge(existing: &Existing, l: &Value, now_s: i64) -> Option<Value> {
+    let existing = match existing {
+        Existing::Unreadable => return None,
+        Existing::Missing => &Value::Null,
+        Existing::Limits(v) => v,
+    };
+    let in_window = existing["fiveHour"]["resetsAt"].as_i64().unwrap_or(0) > now_s;
+    if existing["source"] == "session" && in_window {
+        return None;
+    }
+    let precise_window = !existing.is_null()
+        && existing["source"].as_str() != Some("desktop")
+        && existing["estimated"] != true
+        && in_window;
+    if precise_window {
+        if l["ts"].as_i64() > existing["ts"].as_i64() {
+            let mut m = existing.clone();
+            m["fiveHour"]["usedPercentage"] = l["fiveHour"]["usedPercentage"].clone();
+            m["ts"] = l["ts"].clone();
+            m.as_object_mut().map(|o| o.remove("stale")); // fresh percentage
+            return (m["fiveHour"] != existing["fiveHour"]).then_some(m);
+        }
+        None
+    } else if l["fiveHour"] != existing["fiveHour"] || existing["stale"] == true {
+        Some(l.clone())
+    } else {
+        None
+    }
+}
+
+/// One pass of the desktop-history source (see `desktop_merge`).
 fn sync_desktop_history() {
     let now = now_ms() / 1000;
     let limits = crate::paths::home().join("limits.json");
@@ -527,26 +638,8 @@ fn sync_desktop_history() {
         .and_then(|s| serde_json::from_str::<Value>(&s).ok());
     let Some(l) = history.and_then(|h| from_history(&h, now)) else { return };
     let _lock = LIMITS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let existing: Value = std::fs::read_to_string(&limits)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(Value::Null);
-    let precise_window = !existing.is_null()
-        && existing["source"].as_str() != Some("desktop")
-        && existing["estimated"] != true
-        && existing["fiveHour"]["resetsAt"].as_i64().unwrap_or(0) > now;
-    if precise_window {
-        if l["ts"].as_i64() > existing["ts"].as_i64() {
-            let mut m = existing.clone();
-            m["fiveHour"]["usedPercentage"] = l["fiveHour"]["usedPercentage"].clone();
-            m["ts"] = l["ts"].clone();
-            m.as_object_mut().map(|o| o.remove("stale")); // fresh percentage
-            if m["fiveHour"] != existing["fiveHour"] {
-                write_limits(&limits, &m);
-            }
-        }
-    } else if l["fiveHour"] != existing["fiveHour"] || existing["stale"] == true {
-        write_limits(&limits, &l);
+    if let Some(m) = desktop_merge(&read_existing(&limits), &l, now) {
+        write_limits(&limits, &m);
     }
 }
 

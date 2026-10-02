@@ -24,10 +24,12 @@ pub fn spawn(app: AppHandle) {
         let state_path = crate::paths::state_path();
 
         let limits_path = dir.join("limits.json");
-        let read_limits = || {
-            std::fs::read_to_string(&limits_path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        // The plugin writes limits.json in place: a read can catch it empty or
+        // cut short. That read yields nothing (the UI keeps what it shows), and
+        // the write's later events read the finished file.
+        let read_limits = || match crate::usage_api::read_existing(&limits_path) {
+            crate::usage_api::Existing::Limits(l) => Some(l),
+            _ => None,
         };
 
         // Initial emit so the crab reflects reality on launch.

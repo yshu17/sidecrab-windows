@@ -3187,7 +3187,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sidecrab"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "dirs 5.0.1",
  "notify",
@@ -3204,7 +3204,7 @@ dependencies = [
 
 [[package]]
 name = "sidecrab-hook"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "dirs 5.0.1",
  "serde_json",

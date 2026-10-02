@@ -160,9 +160,13 @@ published here. It never downloads anything.
 - The hook only writes small JSON files under `%APPDATA%\sidecrab`. It never
   touches the network, and it returns in about 10 ms, so Claude Code never waits
   on it.
-- For the 5-hour meter the pet asks Anthropic's usage endpoint with your existing
-  Claude Code login from `~/.claude/.credentials.json`, at most every 30 minutes.
+- The 5-hour meter comes first from Claude Code itself: the plugin hears the
+  engine's own usage figure after each turn and writes it for the pet, with no
+  network call of its own. While Claude Code is quiet (or when you press
+  **Refresh usage**) the pet asks Anthropic's usage endpoint with your existing
+  Claude Code login from `~/.claude/.credentials.json`, at most every 5 minutes.
   The token goes to `curl` through stdin; it is never logged or written anywhere.
+  The desktop app's own usage samples are the last fallback.
 - The update check reads this repository's latest release from the GitHub API.
 - The window runs under a strict Content Security Policy and shows text only as
   plain text.

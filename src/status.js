@@ -12,9 +12,10 @@
 //   - model + context: the session record in sessions.d (claude-sessions), fed by
 //     the statusLine (terminal) or by the hook reading the transcript (desktop);
 //     else the cached last-known context, drawn stale
-//   - 5-hour limit (limits.json -> claude-limits): OAuth usage API (rare refresh),
-//     statusLine, or the desktop app's own samples (reset time then estimated,
-//     shown "~"); else the cached value, drawn stale
+//   - 5-hour limit (limits.json -> claude-limits): the plugin's engine figure
+//     ("session", exact like OAuth/statusLine), OAuth usage API, statusLine, or
+//     the desktop app's own samples (reset time then estimated, shown "~"); else
+//     the cached value, drawn stale
 // Stale = dimmed value plus a trailing "?".
 // Compact mode (the default): the panel collapses into a mini plate — dot, short
 // model name, 5h reset time — and grows back out of it from the centre while
