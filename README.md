@@ -86,6 +86,7 @@ Turn the mini plate on or off with **Compact status bar** in the right-click men
 | **Compact status bar** | mini plate that expands on hover |
 | **Launch at login** | start with Windows |
 | **Start with Claude Code** | appear with every Claude Code session (plugin mode, on by default) |
+| **Keep Claude login fresh** | when Claude Code's stored login expires, ask Claude Code to renew it so the 5-hour meter stays live (on by default) |
 | **Refresh usage** | ask for the 5-hour limit now; the reset time shows `…`, then `fail` if it could not |
 | **Check for Updates…** | look for a newer release here |
 | **Quit Sidecrab** | close the pet (`Ctrl+Q`) |
